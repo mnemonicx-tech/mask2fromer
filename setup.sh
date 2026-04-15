@@ -48,16 +48,59 @@ fi
 cd Mask2Former
 
 echo "==> 5/7  Installing Mask2Former"
-pip install -e .
+if [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
+    echo "Detected Python package metadata; installing editable package."
+    pip install -e .
+else
+    echo "No setup.py/pyproject.toml found; using repo-path install mode."
+
+    if [ -f "requirements.txt" ]; then
+        pip install -r requirements.txt
+    fi
+
+    MASK2FORMER_ROOT="$(pwd)"
+
+    # Register repo paths in venv site-packages so `import mask2former` works.
+    python - <<EOF
+import os
+import site
+
+root = os.path.abspath("${MASK2FORMER_ROOT}")
+paths = [root, os.path.join(root, "mask2former")]
+
+for sp in site.getsitepackages():
+    pth = os.path.join(sp, "mask2former_local.pth")
+    with open(pth, "w", encoding="utf-8") as f:
+        for p in paths:
+            f.write(p + "\\n")
+    print(f"Wrote {pth}")
+EOF
+
+    # Persist PYTHONPATH for future shell sessions when venv is activated.
+    ACTIVATE_FILE="${VENV_DIR}/bin/activate"
+    if ! grep -q "MASK2FORMER_ROOT" "${ACTIVATE_FILE}"; then
+        {
+            echo ""
+            echo "# Added by setup.sh for local Mask2Former repo"
+            echo "export MASK2FORMER_ROOT=\"${MASK2FORMER_ROOT}\""
+            echo "export PYTHONPATH=\"${MASK2FORMER_ROOT}\${PYTHONPATH:+:\$PYTHONPATH}\""
+        } >> "${ACTIVATE_FILE}"
+    fi
+fi
 
 # Build custom CUDA ops (MSDeformAttn)
-cd mask2former/modeling/pixel_decoder/ops
-sh make.sh
-cd ../../../../..
+if [ -d "mask2former/modeling/pixel_decoder/ops" ]; then
+    cd mask2former/modeling/pixel_decoder/ops
+    sh make.sh
+    cd ../../../../..
+else
+    echo "WARNING: CUDA ops directory not found, skipping custom ops build."
+    cd ..
+fi
 
 echo "==> 6/7  Downloading R50 + Mask2Former COCO instance-seg config"
 # Pre-download the official config weights so training starts immediately
-${PYTHON} - <<'EOF'
+python - <<'EOF'
 from detectron2.utils.file_io import PathManager
 import detectron2
 url = "https://dl.fbaipublicfiles.com/detectron2/ImageNetPretrained/torchvision/R-50.pkl"
