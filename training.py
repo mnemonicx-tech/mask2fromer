@@ -118,6 +118,30 @@ class GradAccumAMPTrainer(AMPTrainer):
         self.storage.put_scalars(total_loss=total_loss, data_time=data_time, **loss_dict_accum)
 
 
+class GPUMemoryHook(hooks.HookBase):
+    """Periodically logs GPU memory stats to help diagnose OOM regressions."""
+
+    def __init__(self, period: int = 100):
+        self._period = max(1, int(period))
+
+    def after_step(self):
+        if not torch.cuda.is_available():
+            return
+        next_iter = self.trainer.iter + 1
+        if next_iter % self._period != 0:
+            return
+
+        allocated_mb = torch.cuda.memory_allocated() / (1024 ** 2)
+        reserved_mb = torch.cuda.memory_reserved() / (1024 ** 2)
+        max_allocated_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
+        self.trainer.storage.put_scalars(
+            gpu_mem_allocated_mb=allocated_mb,
+            gpu_mem_reserved_mb=reserved_mb,
+            gpu_mem_max_allocated_mb=max_allocated_mb,
+        )
+
+
 def evaluate(cfg: CfgNode, model) -> Dict:
     """Evaluate on all configured test datasets."""
     results: Dict = {}
@@ -131,12 +155,28 @@ def evaluate(cfg: CfgNode, model) -> Dict:
     return results
 
 
-def train(cfg: CfgNode, resume: bool, grad_accum_steps: int) -> None:
+def train(
+    cfg: CfgNode,
+    resume: bool,
+    grad_accum_steps: int,
+    freeze_backbone: bool = False,
+    log_gpu_mem_interval: int = 100,
+) -> None:
     """Run full training with checkpointing, evaluation, and logging."""
     setup_logger(output=os.path.join(cfg.OUTPUT_DIR, "train.log"), distributed_rank=comm.get_rank())
     logger.info("Starting training with grad_accum_steps=%d", grad_accum_steps)
 
     model = build_model(cfg)
+    model.to(torch.device(cfg.MODEL.DEVICE))
+
+    if freeze_backbone:
+        if hasattr(model, "backbone"):
+            for param in model.backbone.parameters():
+                param.requires_grad = False
+            logger.info("Backbone frozen: training head/decoder only.")
+        else:
+            logger.warning("--freeze-backbone was set, but model has no 'backbone' attribute.")
+
     optimizer = FashionTrainer.build_optimizer(cfg, model)
     scheduler = FashionTrainer.build_lr_scheduler(cfg, optimizer)
     data_loader = FashionTrainer.build_train_loader(cfg)
@@ -157,6 +197,7 @@ def train(cfg: CfgNode, resume: bool, grad_accum_steps: int) -> None:
             hooks.LRScheduler(scheduler=scheduler),
             hooks.PeriodicCheckpointer(checkpointer, period=cfg.SOLVER.CHECKPOINT_PERIOD),
             hooks.EvalHook(cfg.TEST.EVAL_PERIOD, lambda: evaluate(cfg, model)),
+            GPUMemoryHook(period=log_gpu_mem_interval),
             hooks.PeriodicWriter(
                 [
                     CommonMetricPrinter(cfg.SOLVER.MAX_ITER),
@@ -197,6 +238,13 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-images", default=None, help="Path to train image directory")
     parser.add_argument("--val-images", default=None, help="Path to val image directory")
     parser.add_argument("--classes-file", default=None, help="Path to class list file (1 class per line)")
+    parser.add_argument("--freeze-backbone", action="store_true", help="Freeze backbone for fast warmup")
+    parser.add_argument(
+        "--log-gpu-mem-interval",
+        type=int,
+        default=100,
+        help="Log GPU memory stats every N iterations",
+    )
     parser.add_argument("opts", nargs=argparse.REMAINDER, help="Additional Detectron2 overrides")
     return parser
 
@@ -223,6 +271,9 @@ def main(args: argparse.Namespace) -> None:
 
     register_fashion_datasets()
     thing_classes = get_thing_classes()
+    print(f"[training] classes={len(thing_classes)}")
+    print(f"[training] first_classes={thing_classes[:10]}")
+
     cfg = build_cfg(
         output_dir=args.output_dir,
         resume=args.resume,
@@ -246,7 +297,13 @@ def main(args: argparse.Namespace) -> None:
 
     cfg.freeze()
     default_setup(cfg, args)
-    train(cfg, resume=args.resume, grad_accum_steps=args.grad_accum_steps)
+    train(
+        cfg,
+        resume=args.resume,
+        grad_accum_steps=args.grad_accum_steps,
+        freeze_backbone=args.freeze_backbone,
+        log_gpu_mem_interval=args.log_gpu_mem_interval,
+    )
 
 
 if __name__ == "__main__":

@@ -48,45 +48,7 @@ fi
 cd Mask2Former
 
 echo "==> 5/7  Installing Mask2Former"
-if [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
-    echo "Detected Python package metadata; installing editable package."
-    pip install -e .
-else
-    echo "No setup.py/pyproject.toml found; using repo-path install mode."
-
-    if [ -f "requirements.txt" ]; then
-        pip install -r requirements.txt
-    fi
-
-    MASK2FORMER_ROOT="$(pwd)"
-
-    # Register repo paths in venv site-packages so `import mask2former` works.
-    python - <<EOF
-import os
-import site
-
-root = os.path.abspath("${MASK2FORMER_ROOT}")
-paths = [root, os.path.join(root, "mask2former")]
-
-for sp in site.getsitepackages():
-    pth = os.path.join(sp, "mask2former_local.pth")
-    with open(pth, "w", encoding="utf-8") as f:
-        for p in paths:
-            f.write(p + "\\n")
-    print(f"Wrote {pth}")
-EOF
-
-    # Persist PYTHONPATH for future shell sessions when venv is activated.
-    ACTIVATE_FILE="${VENV_DIR}/bin/activate"
-    if ! grep -q "MASK2FORMER_ROOT" "${ACTIVATE_FILE}"; then
-        {
-            echo ""
-            echo "# Added by setup.sh for local Mask2Former repo"
-            echo "export MASK2FORMER_ROOT=\"${MASK2FORMER_ROOT}\""
-            echo "export PYTHONPATH=\"${MASK2FORMER_ROOT}\${PYTHONPATH:+:\$PYTHONPATH}\""
-        } >> "${ACTIVATE_FILE}"
-    fi
-fi
+pip install -e .
 
 # Build custom CUDA ops (MSDeformAttn)
 if [ -d "mask2former/modeling/pixel_decoder/ops" ]; then
