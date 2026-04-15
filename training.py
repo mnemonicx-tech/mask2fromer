@@ -3,8 +3,26 @@
 import argparse
 import logging
 import os
+import sys
 import time
 from typing import Dict, List, Optional
+
+# ── NumPy/Torch compatibility guard ──────────────────────────────────────────
+# PyTorch 2.2.x wheels were compiled against NumPy 1.x ABI.
+# If NumPy 2.x is installed, torch.from_numpy() crashes at dataset loading.
+try:
+    import numpy as np
+    _np_major = int(np.__version__.split(".")[0])
+    if _np_major >= 2:
+        print(
+            f"\n*** FATAL: numpy {np.__version__} detected but PyTorch requires numpy<2.\n"
+            f"*** Fix:   pip install 'numpy>=1.26,<2.0'\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+except ImportError:
+    print("*** FATAL: numpy is not installed. pip install 'numpy>=1.26,<2.0'", file=sys.stderr)
+    sys.exit(1)
 
 import torch
 
