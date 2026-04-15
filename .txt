@@ -1,0 +1,52 @@
+# 0) Go to project
+cd /Users/kishankumar/Coding/mask2fromer
+
+# 1) Activate environment
+source .venv/bin/activate
+
+# 2) (Optional) stop any old training process
+pkill -f training.py || true
+
+# 3) Create a 5-class sample subset
+python create_sample_subset.py \
+  --data-root /mnt/large_volume/training_data \
+  --output-root /mnt/large_volume/training_data_sample5 \
+  --classes bottomwear_men_jeans,topwear_men_t_shirt,topwear_women_top,topwear_women_shirt,western_wear_women_midi_dress \
+  --max-train-images 10000 \
+  --max-val-images 1500
+
+# 4) Basic check (dataset/class preflight only)
+python training.py \
+  --classes-file /mnt/large_volume/training_data_sample5/classes.txt \
+  --train-json /mnt/large_volume/training_data_sample5/annotations/instances_train.json \
+  --val-json /mnt/large_volume/training_data_sample5/annotations/instances_val.json \
+  --train-images /mnt/large_volume/training_data/images/train \
+  --val-images /mnt/large_volume/training_data/images/val \
+  --preflight-only
+
+# 5) Short sanity train (recommended first)
+python training.py \
+  --output-dir ./output_sample5 \
+  --classes-file /mnt/large_volume/training_data_sample5/classes.txt \
+  --train-json /mnt/large_volume/training_data_sample5/annotations/instances_train.json \
+  --val-json /mnt/large_volume/training_data_sample5/annotations/instances_val.json \
+  --train-images /mnt/large_volume/training_data/images/train \
+  --val-images /mnt/large_volume/training_data/images/val \
+  --ims-per-batch 2 \
+  --grad-accum-steps 8 \
+  --num-workers 4 \
+  --smoke-test
+
+# 6) Full 5-class training (after smoke test passes)
+python training.py \
+  --output-dir ./output_sample5 \
+  --classes-file /mnt/large_volume/training_data_sample5/classes.txt \
+  --train-json /mnt/large_volume/training_data_sample5/annotations/instances_train.json \
+  --val-json /mnt/large_volume/training_data_sample5/annotations/instances_val.json \
+  --train-images /mnt/large_volume/training_data/images/train \
+  --val-images /mnt/large_volume/training_data/images/val \
+  --ims-per-batch 2 \
+  --grad-accum-steps 8 \
+  --num-workers 4 \
+  --max-iter 30000
+  

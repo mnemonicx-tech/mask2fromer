@@ -35,6 +35,7 @@ import os
 import random
 import subprocess
 import sys
+from decimal import Decimal
 from typing import Dict, List, Tuple
 
 
@@ -53,10 +54,32 @@ def _ensure_ijson():
         return ijson
 
 
+class _DecimalEncoder(json.JSONEncoder):
+    """ijson parses numbers as Decimal — convert back to int/float for json.dump."""
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return int(o) if o == int(o) else float(o)
+        return super().default(o)
+
+
 def _save_json(path: str, data: Dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+        json.dump(data, f, ensure_ascii=False, cls=_DecimalEncoder)
+
+
+def _extract_top_level_metadata(ijson, json_path: str) -> Tuple[Dict, List[Dict]]:
+    """Read lightweight top-level COCO metadata without loading full JSON."""
+    info = {}
+    licenses = []
+
+    with open(json_path, "rb") as f:
+        info = next(ijson.items(f, "info"), {})
+
+    with open(json_path, "rb") as f:
+        licenses = next(ijson.items(f, "licenses"), [])
+
+    return info, licenses
 
 
 def _build_subset_streaming(
@@ -71,6 +94,7 @@ def _build_subset_streaming(
     Peak memory ≈ size of the *filtered* subset, not the whole file.
     """
     basename = os.path.basename(json_path)
+    info, licenses = _extract_top_level_metadata(ijson, json_path)
 
     # ------------------------------------------------------------------
     # Pass 1: categories (tiny — always fits in memory)
@@ -154,6 +178,8 @@ def _build_subset_streaming(
     ]
 
     out = {
+        "info": info,
+        "licenses": licenses,
         "images": filtered_images,
         "annotations": filtered_anns,
         "categories": new_categories,
