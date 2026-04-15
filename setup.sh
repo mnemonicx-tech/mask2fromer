@@ -56,6 +56,8 @@ else
 
     if [ -f "requirements.txt" ]; then
         pip install -r requirements.txt
+        echo "Enforcing compatible numeric stack for torch/detectron2"
+        pip install "numpy>=1.26,<2.0" "iopath>=0.1.7,<0.1.10"
     fi
 
     MASK2FORMER_ROOT="$(pwd)"
