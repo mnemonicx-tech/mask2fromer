@@ -1,7 +1,11 @@
 """
 create_sample_subset.py
 -----------------------
-Create a smaller COCO subset for quick training experiments (e.g., 5-6 classes).
+Memory-efficient COCO subset creator for large annotation files.
+
+Uses ijson for **streaming** JSON parsing so the full file is never loaded
+into RAM — critical when annotation files are 10+ GB and the machine has
+limited memory (e.g., 21 GB).
 
 It filters categories by name, remaps category ids to contiguous [1..N],
 and samples a capped number of images per split.
@@ -25,15 +29,28 @@ python create_sample_subset.py \
 """
 
 import argparse
+import gc
 import json
 import os
 import random
+import subprocess
+import sys
 from typing import Dict, List, Tuple
 
 
-def _load_json(path: str) -> Dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+def _ensure_ijson():
+    """Import ijson, auto-installing if missing."""
+    try:
+        import ijson
+        return ijson
+    except ImportError:
+        print("[subset] ijson not installed — installing now...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "ijson"],
+            stdout=subprocess.DEVNULL,
+        )
+        import ijson
+        return ijson
 
 
 def _save_json(path: str, data: Dict) -> None:
@@ -42,56 +59,105 @@ def _save_json(path: str, data: Dict) -> None:
         json.dump(data, f, ensure_ascii=False)
 
 
-def _build_subset(
-    coco: Dict,
+def _build_subset_streaming(
+    ijson,
+    json_path: str,
     selected_class_names: List[str],
     max_images: int,
     seed: int,
 ) -> Tuple[Dict, Dict[str, int]]:
-    categories = coco.get("categories", [])
-    images = coco.get("images", [])
-    annotations = coco.get("annotations", [])
+    """
+    Build a COCO subset by streaming through the JSON file in 3 passes.
+    Peak memory ≈ size of the *filtered* subset, not the whole file.
+    """
+    basename = os.path.basename(json_path)
+
+    # ------------------------------------------------------------------
+    # Pass 1: categories (tiny — always fits in memory)
+    # ------------------------------------------------------------------
+    print(f"  [stream] {basename} — Pass 1/3: reading categories...")
+    categories = []
+    with open(json_path, "rb") as f:
+        for cat in ijson.items(f, "categories.item"):
+            categories.append(cat)
 
     name_to_cat = {c["name"]: c for c in categories}
     missing = [c for c in selected_class_names if c not in name_to_cat]
     if missing:
         raise ValueError(f"Classes not found in categories: {missing}")
 
-    selected_old_ids = [name_to_cat[name]["id"] for name in selected_class_names]
-    old_to_new_cat_id = {old_id: i + 1 for i, old_id in enumerate(selected_old_ids)}
+    selected_old_ids = set(name_to_cat[n]["id"] for n in selected_class_names)
+    old_to_new = {
+        name_to_cat[n]["id"]: i + 1
+        for i, n in enumerate(selected_class_names)
+    }
 
-    filtered_anns = [ann for ann in annotations if ann.get("category_id") in selected_old_ids]
+    # ------------------------------------------------------------------
+    # Pass 2: stream annotations — keep only matching category_id
+    # ------------------------------------------------------------------
+    print(f"  [stream] {basename} — Pass 2/3: filtering annotations "
+          f"for {len(selected_class_names)} classes...")
+    filtered_anns = []
+    image_ids = set()
+    scanned = 0
+    with open(json_path, "rb") as f:
+        for ann in ijson.items(f, "annotations.item"):
+            scanned += 1
+            if scanned % 2_000_000 == 0:
+                print(f"  [stream]   ...scanned {scanned:,} annotations")
+            if ann.get("category_id") in selected_old_ids:
+                image_ids.add(ann["image_id"])
+                filtered_anns.append(ann)
+
+    print(f"  [stream]   scanned {scanned:,} total, "
+          f"kept {len(filtered_anns):,} annotations")
+    print(f"  [stream]   images with target classes: {len(image_ids):,}")
+
     if not filtered_anns:
         raise ValueError("No annotations left after class filtering.")
 
-    image_ids_with_target = sorted({ann["image_id"] for ann in filtered_anns})
-    if max_images > 0 and len(image_ids_with_target) > max_images:
+    # Sample images if over budget
+    image_ids_list = sorted(image_ids)
+    if 0 < max_images < len(image_ids_list):
         rnd = random.Random(seed)
-        image_ids_with_target = rnd.sample(image_ids_with_target, max_images)
+        image_ids_list = rnd.sample(image_ids_list, max_images)
+        print(f"  [stream]   sampled down to {max_images} images")
 
-    image_id_set = set(image_ids_with_target)
-    filtered_images = [img for img in images if img.get("id") in image_id_set]
-    filtered_anns = [ann for ann in filtered_anns if ann.get("image_id") in image_id_set]
+    keep_ids = set(image_ids_list)
+    del image_ids, image_ids_list
 
-    for ann in filtered_anns:
-        ann["category_id"] = old_to_new_cat_id[ann["category_id"]]
+    # Trim annotations to sampled image set & remap category ids
+    filtered_anns = [a for a in filtered_anns if a["image_id"] in keep_ids]
+    for a in filtered_anns:
+        a["category_id"] = old_to_new[a["category_id"]]
 
-    new_categories = []
-    for new_id, class_name in enumerate(selected_class_names, start=1):
-        old_cat = name_to_cat[class_name]
-        new_categories.append(
-            {
-                "id": new_id,
-                "name": class_name,
-                "supercategory": old_cat.get("supercategory", "fashion"),
-            }
-        )
+    # ------------------------------------------------------------------
+    # Pass 3: stream images — keep only those in keep_ids
+    # ------------------------------------------------------------------
+    print(f"  [stream] {basename} — Pass 3/3: filtering images...")
+    filtered_images = []
+    with open(json_path, "rb") as f:
+        for img in ijson.items(f, "images.item"):
+            if img.get("id") in keep_ids:
+                filtered_images.append(img)
+                if len(filtered_images) == len(keep_ids):
+                    break  # all found — stop early
 
-    out = dict(coco)
-    out["images"] = filtered_images
-    out["annotations"] = filtered_anns
-    out["categories"] = new_categories
+    # Build new categories
+    new_categories = [
+        {
+            "id": i + 1,
+            "name": n,
+            "supercategory": name_to_cat[n].get("supercategory", "fashion"),
+        }
+        for i, n in enumerate(selected_class_names)
+    ]
 
+    out = {
+        "images": filtered_images,
+        "annotations": filtered_anns,
+        "categories": new_categories,
+    }
     stats = {
         "num_images": len(filtered_images),
         "num_annotations": len(filtered_anns),
@@ -101,7 +167,9 @@ def _build_subset(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create a sampled COCO subset for fast training")
+    parser = argparse.ArgumentParser(
+        description="Create a sampled COCO subset (memory-efficient streaming)"
+    )
     parser.add_argument("--data-root", required=True, help="Original dataset root")
     parser.add_argument("--output-root", required=True, help="Output subset root")
     parser.add_argument(
@@ -118,30 +186,38 @@ def main() -> None:
     if len(selected_classes) < 2:
         raise ValueError("Please select at least 2 classes.")
 
+    ijson = _ensure_ijson()
+
     train_json = os.path.join(args.data_root, "annotations", "instances_train.json")
     val_json = os.path.join(args.data_root, "annotations", "instances_val.json")
-
-    train_coco = _load_json(train_json)
-    val_coco = _load_json(val_json)
-
-    train_subset, train_stats = _build_subset(
-        train_coco,
-        selected_class_names=selected_classes,
-        max_images=args.max_train_images,
-        seed=args.seed,
-    )
-    val_subset, val_stats = _build_subset(
-        val_coco,
-        selected_class_names=selected_classes,
-        max_images=args.max_val_images,
-        seed=args.seed + 1,
-    )
 
     out_ann_dir = os.path.join(args.output_root, "annotations")
     out_train_json = os.path.join(out_ann_dir, "instances_train.json")
     out_val_json = os.path.join(out_ann_dir, "instances_val.json")
+
+    # --- Process train split ---
+    print(f"[subset] Processing train split...")
+    train_subset, train_stats = _build_subset_streaming(
+        ijson, train_json,
+        selected_class_names=selected_classes,
+        max_images=args.max_train_images,
+        seed=args.seed,
+    )
     _save_json(out_train_json, train_subset)
+    del train_subset  # free memory before val split
+    gc.collect()
+
+    # --- Process val split ---
+    print(f"[subset] Processing val split...")
+    val_subset, val_stats = _build_subset_streaming(
+        ijson, val_json,
+        selected_class_names=selected_classes,
+        max_images=args.max_val_images,
+        seed=args.seed + 1,
+    )
     _save_json(out_val_json, val_subset)
+    del val_subset
+    gc.collect()
 
     classes_file = os.path.join(args.output_root, "classes.txt")
     with open(classes_file, "w", encoding="utf-8") as f:
