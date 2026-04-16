@@ -10,6 +10,7 @@ TORCH_VERSION="2.2.2"
 CUDA_VERSION="cu121"
 VENV_DIR=${VENV_DIR:-.venv}
 DETECTRON2_REF=${DETECTRON2_REF:-v0.6}
+MASK2FORMER_REPO=${MASK2FORMER_REPO:-https://github.com/mnemonicx-tech/Mask2Former-patched.git}
 
 echo "==> 0/7  Setting up virtual environment"
 if [ ! -d "${VENV_DIR}" ]; then
@@ -44,7 +45,7 @@ pip install \
 
 echo "==> 4/7  Cloning Mask2Former"
 if [ ! -d "Mask2Former" ]; then
-    git clone https://github.com/facebookresearch/Mask2Former.git
+    git clone "${MASK2FORMER_REPO}" Mask2Former
 fi
 cd Mask2Former
 
