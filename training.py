@@ -181,7 +181,6 @@ def train(
     log_gpu_mem_interval: int = 100,
 ) -> None:
     """Run full training with checkpointing, evaluation, and logging."""
-    setup_logger(output=os.path.join(cfg.OUTPUT_DIR, "train.log"), distributed_rank=comm.get_rank())
     logger.info("Starting training with grad_accum_steps=%d", grad_accum_steps)
 
     model = build_model(cfg)
