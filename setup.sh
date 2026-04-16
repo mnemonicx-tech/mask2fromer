@@ -9,6 +9,7 @@ PYTHON=${PYTHON:-python3.10}
 TORCH_VERSION="2.2.2"
 CUDA_VERSION="cu121"
 VENV_DIR=${VENV_DIR:-.venv}
+DETECTRON2_REF=${DETECTRON2_REF:-v0.6}
 
 echo "==> 0/7  Setting up virtual environment"
 if [ ! -d "${VENV_DIR}" ]; then
@@ -38,7 +39,7 @@ pip install -r requirements.txt
 
 echo "==> 3/7  Installing Detectron2 from source"
 pip install \
-    "git+https://github.com/facebookresearch/detectron2.git" \
+    "git+https://github.com/facebookresearch/detectron2.git@${DETECTRON2_REF}" \
     --no-build-isolation
 
 echo "==> 4/7  Cloning Mask2Former"
