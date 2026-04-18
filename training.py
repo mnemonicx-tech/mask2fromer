@@ -29,8 +29,7 @@ import torch
 # ── Detectron2 / numpy compat monkey-patch ──────────────────────────────────
 # np.bool was removed in numpy 1.24; detectron2 v0.6 still uses it in masks.py
 import numpy as _np
-if not hasattr(_np, "bool"):
-    _np.bool = bool
+_np.bool = bool  # safe: bool is what np.bool always was
 
 # ── A100 / Ampere+ optimizations ─────────────────────────────────────────
 # TF32 gives ~2× throughput on matmuls with negligible precision loss.
