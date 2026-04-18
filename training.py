@@ -26,6 +26,13 @@ except ImportError:
 
 import torch
 
+# ── A100 / Ampere+ optimizations ─────────────────────────────────────────
+# TF32 gives ~2× throughput on matmuls with negligible precision loss.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+# Auto-tune convolution algorithms for best perf on this GPU
+torch.backends.cudnn.benchmark = True
+
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import CfgNode
@@ -248,7 +255,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--machine-rank", type=int, default=0)
     parser.add_argument("--dist-url", default="auto")
     parser.add_argument("--max-iter", type=int, default=None, help="Override max iterations")
-    parser.add_argument("--grad-accum-steps", type=int, default=8, help="Gradient accumulation steps")
+    parser.add_argument("--grad-accum-steps", type=int, default=1, help="Gradient accumulation steps (1 = no accumulation)")
     parser.add_argument("--ims-per-batch", type=int, default=None, help="Override SOLVER.IMS_PER_BATCH")
     parser.add_argument("--num-workers", type=int, default=None, help="Override DATALOADER.NUM_WORKERS")
     parser.add_argument("--smoke-test", action="store_true", help="Run a short 2000-iteration sanity test")

@@ -81,9 +81,8 @@ def build_cfg(
     # Model head — set num classes correctly
     # -----------------------------------------------------------------------
     cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = num_classes
-    # Mask2Former uses a panoptic/instance head; the number of queries is tuned
-    # for COCO (133 classes, 100 queries).  For 98 classes keep 100 queries.
-    cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES = 100
+    # 97 classes → 200 queries gives headroom for dense multi-garment scenes
+    cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES = 200
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
@@ -112,17 +111,17 @@ def build_cfg(
     cfg.INPUT.RANDOM_FLIP          = "horizontal"
 
     # -----------------------------------------------------------------------
-    # Solver — tuned for A100-80GB PCIe
+    # Solver — tuned for A100-80GB PCIe (28 CPUs, 120 GB RAM)
     # -----------------------------------------------------------------------
-    # A100-80GB can fit 8 images/iter at full resolution (1024).
-    # No grad accumulation needed → effective batch = 8.
-    # Scale LR: base 1e-4 @ bs16 → 5e-5 @ bs8.
-    cfg.SOLVER.IMS_PER_BATCH           = 8
+    # A100-80GB fits 16 images/iter at 1024–1280px with AMP.
+    # Matches official Mask2Former baseline batch size → use official LR.
+    cfg.SOLVER.IMS_PER_BATCH           = 16
 
-    _EFFECTIVE_ITERS = 450_000
+    _EFFECTIVE_ITERS = 100_000
     cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS
 
-    cfg.SOLVER.BASE_LR                 = 5e-5
+    # Official Mask2Former LR for bs16
+    cfg.SOLVER.BASE_LR                 = 1e-4
     cfg.SOLVER.WEIGHT_DECAY            = 0.05
 
     # AdamW (Mask2Former default)
@@ -155,8 +154,8 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Dataloader
     # -----------------------------------------------------------------------
-    # A100 machine has 28 CPUs and 120GB RAM — use more workers for throughput.
-    cfg.DATALOADER.NUM_WORKERS           = 8
+    # 28 CPUs / 120 GB RAM: 12 workers saturate the GPU without thrashing.
+    cfg.DATALOADER.NUM_WORKERS           = 12
     cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
 
     # -----------------------------------------------------------------------
