@@ -102,31 +102,27 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Input / augmentation
     # -----------------------------------------------------------------------
-    # Prefer higher detail for fashion boundaries and fine garment cues.
-    cfg.INPUT.MIN_SIZE_TRAIN       = (800,)
-    cfg.INPUT.MAX_SIZE_TRAIN       = 1333
-    cfg.INPUT.MIN_SIZE_TEST        = 800
-    cfg.INPUT.MAX_SIZE_TEST        = 1333
+    # A100-80GB: push resolution high for sharp garment edges & fine seams.
+    # Multi-scale training with bias toward larger sizes for detail.
+    cfg.INPUT.MIN_SIZE_TRAIN       = (800, 832, 864, 896, 928, 960, 992, 1024, 1056, 1088, 1120, 1152, 1184, 1216, 1248, 1280)
+    cfg.INPUT.MAX_SIZE_TRAIN       = 1536
+    cfg.INPUT.MIN_SIZE_TEST        = 1024
+    cfg.INPUT.MAX_SIZE_TEST        = 1536
     cfg.INPUT.FORMAT               = "RGB"
-    # Random flip only — avoid heavy colour jitter that slows dataloader
     cfg.INPUT.RANDOM_FLIP          = "horizontal"
 
     # -----------------------------------------------------------------------
-    # Solver — tuned for RTX A4000 16 GB
+    # Solver — tuned for A100-80GB PCIe
     # -----------------------------------------------------------------------
-    # Effective batch target is 16 for stable optimization on large datasets.
-    # Safer A4000 default: 2 images/iter with grad accumulation in trainer.
-    cfg.SOLVER.IMS_PER_BATCH           = 2
+    # A100-80GB can fit 8 images/iter at full resolution (1024).
+    # No grad accumulation needed → effective batch = 8.
+    # Scale LR: base 1e-4 @ bs16 → 5e-5 @ bs8.
+    cfg.SOLVER.IMS_PER_BATCH           = 8
 
-    # With ~1.2 M images and effective batch 16 → ~75 k steps per epoch.
-    # Train for ~6 effective epochs = 450 k iterations (real forward steps).
     _EFFECTIVE_ITERS = 450_000
     cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS
 
-    # Learning rate
-    # Rule of thumb: base_lr * (effective_batch / 16)
-    # Official R50 baseline: 1e-4 @ bs16 → keep 1e-4 since eff_bs=16
-    cfg.SOLVER.BASE_LR                 = 1e-4
+    cfg.SOLVER.BASE_LR                 = 5e-5
     cfg.SOLVER.WEIGHT_DECAY            = 0.05
 
     # AdamW (Mask2Former default)
@@ -159,8 +155,8 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Dataloader
     # -----------------------------------------------------------------------
-    # Keep workers moderate to avoid context switching and host RAM pressure.
-    cfg.DATALOADER.NUM_WORKERS           = 4
+    # A100 machine has 28 CPUs and 120GB RAM — use more workers for throughput.
+    cfg.DATALOADER.NUM_WORKERS           = 8
     cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
 
     # -----------------------------------------------------------------------

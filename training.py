@@ -231,7 +231,11 @@ def train(
         trainer.train(start_iter, cfg.SOLVER.MAX_ITER)
 
     if comm.is_main_process():
-        print_csv_format(evaluate(cfg, model))
+        final_results = evaluate(cfg, model)
+        for dataset_name, dataset_results in final_results.items():
+            logger.info("Final evaluation summary for dataset=%s", dataset_name)
+            if isinstance(dataset_results, dict):
+                print_csv_format(dataset_results)
 
 
 def get_parser() -> argparse.ArgumentParser:
