@@ -106,14 +106,30 @@ else
 fi
 
 echo "==> 6/7  Patching detectron2 for numpy>=1.24 / Pillow>=10 compat"
-D2_PKG=$(python -c "import detectron2, pathlib; print(pathlib.Path(detectron2.__file__).parent)")
-echo "      detectron2 package at: ${D2_PKG}"
-# np.bool / np.int / np.float removed in numpy 1.24+
-sed -i 's/\.astype(np\.bool)/.astype(bool)/g'   "${D2_PKG}/structures/masks.py" 2>/dev/null || true
-sed -i 's/np\.bool[^_]/bool/g'                     "${D2_PKG}/structures/masks.py" 2>/dev/null || true
-# PIL.Image.LINEAR → PIL.Image.BILINEAR (Pillow 10+)
-sed -i 's/Image\.LINEAR/Image.BILINEAR/g'          "${D2_PKG}/data/transforms/transform.py" 2>/dev/null || true
-echo "      Patches applied."
+# np.bool / np.int / np.float removed in numpy 1.24+; PIL.Image.LINEAR removed in Pillow 10+
+python3 - <<'PYEOF'
+import re, pathlib
+
+d2 = pathlib.Path(__import__("detectron2").__file__).parent
+
+# masks.py: np.bool -> bool (use negative lookahead to preserve np.bool_ etc.)
+masks = d2 / "structures/masks.py"
+if masks.exists():
+    txt = masks.read_text()
+    txt = re.sub(r'np\.bool(?![_\w0-9])', 'bool', txt)
+    masks.write_text(txt)
+    print(f"  patched {masks}")
+
+# transform.py: Image.LINEAR -> Image.BILINEAR
+transform = d2 / "data/transforms/transform.py"
+if transform.exists():
+    txt = transform.read_text()
+    txt = txt.replace("Image.LINEAR", "Image.BILINEAR")
+    transform.write_text(txt)
+    print(f"  patched {transform}")
+
+print("  Patches applied.")
+PYEOF
 
 echo "==> 7/7  Downloading R50 + Mask2Former COCO instance-seg config"
 # Pre-download the official config weights so training starts immediately
