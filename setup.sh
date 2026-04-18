@@ -105,7 +105,17 @@ else
     cd ..
 fi
 
-echo "==> 6/7  Downloading R50 + Mask2Former COCO instance-seg config"
+echo "==> 6/7  Patching detectron2 for numpy>=1.24 / Pillow>=10 compat"
+D2_PKG=$(python -c "import detectron2, pathlib; print(pathlib.Path(detectron2.__file__).parent)")
+echo "      detectron2 package at: ${D2_PKG}"
+# np.bool / np.int / np.float removed in numpy 1.24+
+sed -i 's/\.astype(np\.bool)/.astype(bool)/g'   "${D2_PKG}/structures/masks.py" 2>/dev/null || true
+sed -i 's/np\.bool[^_]/bool/g'                     "${D2_PKG}/structures/masks.py" 2>/dev/null || true
+# PIL.Image.LINEAR → PIL.Image.BILINEAR (Pillow 10+)
+sed -i 's/Image\.LINEAR/Image.BILINEAR/g'          "${D2_PKG}/data/transforms/transform.py" 2>/dev/null || true
+echo "      Patches applied."
+
+echo "==> 7/7  Downloading R50 + Mask2Former COCO instance-seg config"
 # Pre-download the official config weights so training starts immediately
 python - <<'EOF'
 from detectron2.utils.file_io import PathManager
@@ -115,7 +125,7 @@ PathManager.get_local_path(url)
 print("R-50 backbone weights cached.")
 EOF
 
-echo "==> 7/7  Final environment info"
+echo "==> 8/8  Final environment info"
 python -c "import torch; print('Torch:', torch.__version__, '| CUDA available:', torch.cuda.is_available())"
 
 echo ""
