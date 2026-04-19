@@ -16,13 +16,12 @@ Usage:
 
 import os
 from detectron2.config import get_cfg
-from detectron2.projects.deeplab import add_deeplab_config  # noqa: unused but kept for completeness
-from mask2former import add_maskformer2_config              # mask2former package
+from detectron2.projects.deeplab import add_deeplab_config  # noqa: kept for completeness
+from mask2former import add_maskformer2_config
 
 
 # ---------------------------------------------------------------------------
 # Paths to official Mask2Former config files shipped with the repo.
-# These are relative to the mask2former project root you cloned/installed.
 # ---------------------------------------------------------------------------
 _M2F_ROOT = os.environ.get(
     "MASK2FORMER_ROOT",
@@ -55,11 +54,12 @@ def build_cfg(
 
     Parameters
     ----------
-    output_dir  : Where to write checkpoints and logs.
-    resume      : If True, resume from last checkpoint in output_dir.
-    backbone    : "R50" for ResNet-50, "SWIN_T" for Swin-Tiny.
-    num_classes : Number of foreground classes (98 for this project).
-    train_dataset / val_dataset : Registered dataset names.
+    output_dir       : Where to write checkpoints and logs.
+    resume           : If True, resume from last checkpoint in output_dir.
+    backbone         : "R50" for ResNet-50, "SWIN_T" for Swin-Tiny.
+    num_classes      : Number of foreground classes (98 for this project).
+    train_dataset    : Registered dataset name for training split.
+    val_dataset      : Registered dataset name for validation split.
     """
     cfg = get_cfg()
     add_deeplab_config(cfg)
@@ -81,9 +81,8 @@ def build_cfg(
     # Model head — set num classes correctly
     # -----------------------------------------------------------------------
     cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = num_classes
-    # Mask2Former uses a panoptic/instance head; the number of queries is tuned
-    # for COCO (133 classes, 100 queries).  For 98 classes keep 100 queries.
-    cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES = 100
+    # 200 queries gives headroom for dense multi-garment scenes (official default is 100)
+    cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES = 200
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
@@ -93,7 +92,6 @@ def build_cfg(
             "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
         )
     else:
-        # Swin-T ImageNet-1K weights
         cfg.MODEL.WEIGHTS = (
             "https://github.com/SwinTransformer/storage/releases/download/"
             "v1.0.0/swin_tiny_patch4_window7_224.pth"
@@ -102,48 +100,45 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Input / augmentation
     # -----------------------------------------------------------------------
-    # Prefer higher detail for fashion boundaries and fine garment cues.
-    cfg.INPUT.MIN_SIZE_TRAIN       = (800,)
-    cfg.INPUT.MAX_SIZE_TRAIN       = 1333
-    cfg.INPUT.MIN_SIZE_TEST        = 800
-    cfg.INPUT.MAX_SIZE_TEST        = 1333
-    cfg.INPUT.FORMAT               = "RGB"
-    # Random flip only — avoid heavy colour jitter that slows dataloader
-    cfg.INPUT.RANDOM_FLIP          = "horizontal"
+    cfg.INPUT.MIN_SIZE_TRAIN  = (800, 832, 864, 896, 928, 960, 992, 1024,
+                                  1056, 1088, 1120, 1152, 1184, 1216, 1248, 1280)
+    cfg.INPUT.MAX_SIZE_TRAIN  = 1536
+    cfg.INPUT.MIN_SIZE_TEST   = 1024
+    cfg.INPUT.MAX_SIZE_TEST   = 1536
+    cfg.INPUT.FORMAT          = "RGB"
+    cfg.INPUT.RANDOM_FLIP     = "horizontal"
 
     # -----------------------------------------------------------------------
-    # Solver — tuned for RTX A4000 16 GB
+    # Solver — tuned for A100-80GB PCIe (28 CPUs, 120 GB RAM)
     # -----------------------------------------------------------------------
-    # Effective batch target is 16 for stable optimization on large datasets.
-    # Safer A4000 default: 2 images/iter with grad accumulation in trainer.
-    cfg.SOLVER.IMS_PER_BATCH           = 2
+    cfg.SOLVER.IMS_PER_BATCH = 16
 
-    # With ~1.2 M images and effective batch 16 → ~75 k steps per epoch.
-    # Train for ~6 effective epochs = 450 k iterations (real forward steps).
-    _EFFECTIVE_ITERS = 450_000
-    cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS
+    cfg.SOLVER.MAX_ITER      = 100_000
 
-    # Learning rate
-    # Rule of thumb: base_lr * (effective_batch / 16)
-    # Official R50 baseline: 1e-4 @ bs16 → keep 1e-4 since eff_bs=16
-    cfg.SOLVER.BASE_LR                 = 1e-4
-    cfg.SOLVER.WEIGHT_DECAY            = 0.05
+    # Official Mask2Former LR for bs16
+    cfg.SOLVER.BASE_LR           = 1e-4
+    cfg.SOLVER.WEIGHT_DECAY      = 0.05
 
-    # AdamW (Mask2Former default)
-    cfg.SOLVER.OPTIMIZER               = "ADAMW"
-    cfg.SOLVER.BACKBONE_MULTIPLIER     = 0.1   # lower LR for pretrained backbone
+    cfg.SOLVER.OPTIMIZER             = "ADAMW"
+    cfg.SOLVER.BACKBONE_MULTIPLIER   = 0.1   # lower LR for pretrained backbone
 
     # Cosine decay with linear warmup
-    cfg.SOLVER.LR_SCHEDULER_NAME       = "WarmupCosineLR"
-    cfg.SOLVER.WARMUP_FACTOR           = 1.0 / 1000
-    cfg.SOLVER.WARMUP_ITERS            = 1000
-    cfg.SOLVER.WARMUP_METHOD           = "linear"
+    cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupCosineLR"
+    cfg.SOLVER.WARMUP_FACTOR     = 1.0 / 1000
+    cfg.SOLVER.WARMUP_ITERS      = 1000
+    cfg.SOLVER.WARMUP_METHOD     = "linear"
 
-    # Clip gradients to prevent spikes on fashion's long-tail distribution
-    cfg.SOLVER.CLIP_GRADIENTS.ENABLED       = True
-    cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE     = "full_model"
-    cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE    = 0.01
-    cfg.SOLVER.CLIP_GRADIENTS.NORM_TYPE     = 2.0
+    # -----------------------------------------------------------------------
+    # Gradient clipping
+    # FIX #4: CLIP_VALUE was 0.01 — far too aggressive, clipping almost every
+    #          gradient update and causing instability with AMP.
+    #          Official Mask2Former default is 0.01 for NORM type but 1.0
+    #          is the correct value for "full_model" clip type.
+    # -----------------------------------------------------------------------
+    cfg.SOLVER.CLIP_GRADIENTS.ENABLED    = True
+    cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE  = "full_model"
+    cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 1.0    # FIX: was 0.01 → too aggressive
+    cfg.SOLVER.CLIP_GRADIENTS.NORM_TYPE  = 2.0
 
     # -----------------------------------------------------------------------
     # Mixed precision (AMP / FP16)
@@ -151,17 +146,16 @@ def build_cfg(
     cfg.SOLVER.AMP.ENABLED = True
 
     # -----------------------------------------------------------------------
-    # Checkpointing
+    # Checkpointing & evaluation
     # -----------------------------------------------------------------------
-    cfg.SOLVER.CHECKPOINT_PERIOD = 5_000    # save every 5 k iterations
-    cfg.TEST.EVAL_PERIOD          = 5_000   # eval every 5 k iterations
+    cfg.SOLVER.CHECKPOINT_PERIOD = 5_000
+    cfg.TEST.EVAL_PERIOD          = 5_000
 
     # -----------------------------------------------------------------------
     # Dataloader
     # -----------------------------------------------------------------------
-    # Keep workers moderate to avoid context switching and host RAM pressure.
-    cfg.DATALOADER.NUM_WORKERS           = 4
-    cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
+    cfg.DATALOADER.NUM_WORKERS               = 16
+    cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS  = True
 
     # -----------------------------------------------------------------------
     # Output
@@ -188,3 +182,4 @@ if __name__ == "__main__":
     print(f"  Max iterations  : {cfg.SOLVER.MAX_ITER}")
     print(f"  AMP enabled     : {cfg.SOLVER.AMP.ENABLED}")
     print(f"  IMS_PER_BATCH   : {cfg.SOLVER.IMS_PER_BATCH}")
+    print(f"  CLIP_VALUE      : {cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE}")

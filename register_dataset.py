@@ -10,15 +10,19 @@ Usage:
 """
 
 import os
+import random
 from typing import Dict, List
 
 from pycocotools.coco import COCO
+from pycocotools import mask as maskUtils
 from detectron2.data.datasets import register_coco_instances
 from detectron2.data import MetadataCatalog, DatasetCatalog
 
 # ---------------------------------------------------------------------------
 # Fashion class names expected in COCO JSON category "name".
 # Keep order aligned to dataset category-id ordering.
+# FIX #1: Removed duplicate/typo "opwear_women_trench_coat" — was causing
+#          99 entries vs NUM_CLASSES=98, leading to index OOB → NaN loss.
 # ---------------------------------------------------------------------------
 FASHION_CLASSES = [
     "bottomwear_men_cargo_pants",
@@ -110,8 +114,7 @@ FASHION_CLASSES = [
     "topwear_women_sweatshirt",
     "topwear_women_t_shirt",
     "topwear_women_top",
-    "topwear_women_trench_coat",
-    "opwear_women_trench_coat",
+    "topwear_women_trench_coat",          # FIX: removed duplicate "opwear_women_trench_coat"
     "tunic_nan_women",
     "western_wear_women_bodycon_dress",
     "western_wear_women_jumpsuit",
@@ -123,7 +126,11 @@ FASHION_CLASSES = [
     "western_wear_women_wrap_dress",
 ]
 
-assert len(FASHION_CLASSES) > 0, "No classes configured in CLASS_NAME_MAP"
+assert len(FASHION_CLASSES) == 98, (
+    f"FASHION_CLASSES must have exactly 98 entries, got {len(FASHION_CLASSES)}. "
+    "Check for duplicates or missing classes."
+)
+
 
 def get_thing_classes() -> List[str]:
     """
@@ -182,7 +189,7 @@ def get_datasets() -> Dict[str, Dict[str, str]]:
 
     return {
         "fashion_train": {"json": train_json, "images": train_images},
-        "fashion_val": {"json": val_json, "images": val_images},
+        "fashion_val":   {"json": val_json,   "images": val_images},
     }
 
 
@@ -192,7 +199,7 @@ def register_fashion_datasets() -> None:
     splits that are already registered.
     """
     datasets = get_datasets()
-    classes = get_thing_classes()
+    classes  = get_thing_classes()
 
     for name, paths in datasets.items():
         if name in DatasetCatalog:
@@ -200,20 +207,21 @@ def register_fashion_datasets() -> None:
 
         register_coco_instances(
             name=name,
-            metadata={},           # filled in below
+            metadata={},
             json_file=paths["json"],
             image_root=paths["images"],
         )
 
         meta = MetadataCatalog.get(name)
         meta.thing_classes = classes
-        # Detectron2 convention: thing_dataset_id_to_contiguous_id is built
-        # automatically by register_coco_instances from the JSON; no need to
-        # set it manually unless you have non-contiguous IDs.
+        # thing_dataset_id_to_contiguous_id is built automatically by
+        # register_coco_instances from the JSON — no manual override needed
+        # unless your category IDs are non-contiguous.
 
-        print(f"[register_dataset] Registered '{name}' — "
-              f"{len(classes)} classes | "
-              f"json={paths['json']}")
+        print(
+            f"[register_dataset] Registered '{name}' — "
+            f"{len(classes)} classes | json={paths['json']}"
+        )
 
 
 def get_json_classes(json_file: str) -> List[str]:
@@ -244,10 +252,8 @@ def validate_thing_classes_against_json(json_file: str, thing_classes: List[str]
 
     if mismatches:
         preview = "\n".join(
-            [
-                f"  idx={i}: json='{j}' vs thing_classes='{t}'"
-                for i, j, t in mismatches[:10]
-            ]
+            f"  idx={i}: json='{j}' vs thing_classes='{t}'"
+            for i, j, t in mismatches[:10]
         )
         raise ValueError(
             "thing_classes mismatch with COCO JSON. "
@@ -256,62 +262,127 @@ def validate_thing_classes_against_json(json_file: str, thing_classes: List[str]
         )
 
 
-def validate_coco_annotations(json_file: str, sample_size: int = 5000) -> Dict[str, int]:
+def validate_coco_annotations(
+    json_file: str,
+    sample_size: int = 10_000,
+    full_scan: bool = False,
+) -> Dict[str, int]:
     """
-    Lightweight COCO annotation sanity checks.
-    - segmentation exists and is non-empty
-    - category_id exists in category set
-    - image_id exists in image set
+    COCO annotation sanity checks.
+
+    FIX #2: Changed from sequential first-N sample to RANDOM sample so
+            corrupt annotations later in the 247K dataset are detected.
+    FIX #3: Added zero-area, short-polygon, and RLE decode checks that
+            were previously missing.
+
+    Parameters
+    ----------
+    json_file   : Path to COCO annotations JSON.
+    sample_size : How many annotations to check (default 10K random).
+    full_scan   : If True, scan ALL annotations (slow but thorough).
     """
-    coco = COCO(json_file)
+    coco    = COCO(json_file)
     img_ids = set(coco.getImgIds())
     cat_ids = set(coco.getCatIds())
-    ann_ids = coco.getAnnIds()
+    ann_ids = list(coco.getAnnIds())
 
     if len(ann_ids) == 0:
         raise ValueError(f"No annotations found in {json_file}")
 
-    sampled_ids = ann_ids[: min(sample_size, len(ann_ids))]
+    if full_scan:
+        sampled_ids = ann_ids
+        print(f"[validate] Full scan of {len(ann_ids)} annotations …")
+    else:
+        # FIX: random sample covers the full dataset, not just the first N
+        sampled_ids = random.sample(ann_ids, min(sample_size, len(ann_ids)))
+        print(f"[validate] Random sample of {len(sampled_ids)}/{len(ann_ids)} annotations …")
+
     anns = coco.loadAnns(sampled_ids)
 
     missing_seg = 0
-    bad_cat = 0
-    bad_img = 0
+    bad_cat     = 0
+    bad_img     = 0
+    zero_area   = 0
+    short_poly  = 0
+    bad_rle     = 0
+
+    bad_examples: List[str] = []
 
     for ann in anns:
+        ann_id = ann.get("id", "?")
+        img_id = ann.get("image_id", "?")
+
+        # 1. Segmentation present
         seg = ann.get("segmentation", None)
         if seg is None or (isinstance(seg, list) and len(seg) == 0):
             missing_seg += 1
+            bad_examples.append(f"ann_id={ann_id} img_id={img_id}: missing segmentation")
+            continue
 
+        # 2. Polygon checks
+        if isinstance(seg, list):
+            for poly in seg:
+                if len(poly) < 6:          # fewer than 3 (x,y) pairs
+                    short_poly += 1
+                    bad_examples.append(
+                        f"ann_id={ann_id} img_id={img_id}: polygon too short ({len(poly)} coords)"
+                    )
+
+        # 3. RLE decode check
+        elif isinstance(seg, dict):
+            try:
+                m = maskUtils.decode(seg)
+                if m.sum() == 0:
+                    bad_rle += 1
+                    bad_examples.append(f"ann_id={ann_id} img_id={img_id}: empty RLE mask")
+            except Exception as e:
+                bad_rle += 1
+                bad_examples.append(f"ann_id={ann_id} img_id={img_id}: RLE decode error — {e}")
+
+        # 4. Zero / negative area
+        if ann.get("area", 1) <= 0:
+            zero_area += 1
+            bad_examples.append(f"ann_id={ann_id} img_id={img_id}: zero/negative area={ann.get('area')}")
+
+        # 5. Category ID in range
         if ann.get("category_id") not in cat_ids:
             bad_cat += 1
+            bad_examples.append(
+                f"ann_id={ann_id} img_id={img_id}: invalid category_id={ann.get('category_id')}"
+            )
 
+        # 6. Image ID exists
         if ann.get("image_id") not in img_ids:
             bad_img += 1
+            bad_examples.append(f"ann_id={ann_id}: image_id={img_id} not in dataset")
 
-    if missing_seg or bad_cat or bad_img:
+    total_bad = missing_seg + bad_cat + bad_img + zero_area + short_poly + bad_rle
+    if total_bad > 0:
+        preview = "\n  ".join(bad_examples[:20])
         raise ValueError(
-            "COCO annotation validation failed: "
-            f"missing_segmentation={missing_seg}, bad_category_id={bad_cat}, bad_image_id={bad_img}"
+            f"COCO annotation validation failed ({total_bad} issues):\n"
+            f"  missing_seg={missing_seg}, bad_cat={bad_cat}, bad_img={bad_img}, "
+            f"zero_area={zero_area}, short_poly={short_poly}, bad_rle={bad_rle}\n"
+            f"Examples:\n  {preview}"
         )
 
     return {
-        "num_images": len(img_ids),
-        "num_categories": len(cat_ids),
-        "num_annotations": len(ann_ids),
+        "num_images":          len(img_ids),
+        "num_categories":      len(cat_ids),
+        "num_annotations":     len(ann_ids),
         "checked_annotations": len(sampled_ids),
     }
 
 
-def run_preflight_checks() -> None:
+def run_preflight_checks(full_scan: bool = False) -> None:
     """Fail-fast validation for class names and annotation schema."""
     datasets = get_datasets()
-    classes = get_thing_classes()
+    classes  = get_thing_classes()
 
     for split_name, paths in datasets.items():
         json_file = paths["json"]
         validate_thing_classes_against_json(json_file, classes)
-        stats = validate_coco_annotations(json_file)
+        stats = validate_coco_annotations(json_file, full_scan=full_scan)
         print(
             f"[preflight] {split_name}: "
             f"images={stats['num_images']} categories={stats['num_categories']} "
@@ -323,13 +394,18 @@ def run_preflight_checks() -> None:
 # Standalone smoke-test
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    run_preflight_checks()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--full-scan", action="store_true", help="Scan ALL annotations (slow)")
+    args = parser.parse_args()
+
+    run_preflight_checks(full_scan=args.full_scan)
     register_fashion_datasets()
 
-    from detectron2.data import build_detection_train_loader
     dataset_dicts = DatasetCatalog.get("fashion_train")
     print(f"Train samples : {len(dataset_dicts)}")
     print(f"Sample entry  : {list(dataset_dicts[0].keys())}")
 
     meta = MetadataCatalog.get("fashion_train")
-    print(f"Classes       : {meta.thing_classes[:5]} ... (total {len(meta.thing_classes)})")
+    print(f"Classes       : {meta.thing_classes[:5]} … (total {len(meta.thing_classes)})")
