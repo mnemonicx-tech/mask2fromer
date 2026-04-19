@@ -109,11 +109,10 @@ class FashionTrainer(DefaultTrainer):
             use_instance_mask=True,
             instance_mask_format="bitmask",
         )
-        num_workers = max(cfg.DATALOADER.NUM_WORKERS, 16)
         return build_detection_train_loader(
             cfg,
             mapper=mapper,
-            num_workers=num_workers,
+            num_workers=cfg.DATALOADER.NUM_WORKERS,
         )
 
     @classmethod
@@ -158,8 +157,18 @@ class GradAccumAMPTrainer(AMPTrainer):
                     loss_dict = self.model(data)
                     losses = sum(loss_dict.values()) / self.accum_steps
             except (ValueError, RuntimeError) as e:
-                # Skip batches with NaN cost matrices or other numerical errors
-                logger.warning(f"Skipping bad batch: {e}")
+                logger.warning(f"Skipping bad batch (exception): {e}")
+                self.optimizer.zero_grad(set_to_none=True)
+                data_time = time.perf_counter() - start
+                self.storage.put_scalars(data_time=data_time)
+                return
+
+            # NaN/Inf guard: skip batch before backward() corrupts weights
+            if not torch.isfinite(losses):
+                logger.warning(
+                    f"[iter {self.storage.iter}] Non-finite loss={losses.item():.4f}, "
+                    f"skipping batch. loss_dict={  {k: v.item() for k, v in loss_dict.items()} }"
+                )
                 self.optimizer.zero_grad(set_to_none=True)
                 data_time = time.perf_counter() - start
                 self.storage.put_scalars(data_time=data_time)

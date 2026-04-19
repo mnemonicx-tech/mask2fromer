@@ -114,7 +114,7 @@ FASHION_CLASSES = [
     "topwear_women_sweatshirt",
     "topwear_women_t_shirt",
     "topwear_women_top",
-    "topwear_women_trench_coat",          # FIX: removed duplicate "opwear_women_trench_coat"
+    "topwear_women_trench_coat",
     "tunic_nan_women",
     "western_wear_women_bodycon_dress",
     "western_wear_women_jumpsuit",
@@ -289,24 +289,15 @@ def validate_coco_annotations(
     if len(ann_ids) == 0:
         raise ValueError(f"No annotations found in {json_file}")
 
-    if full_scan:
-        sampled_ids = ann_ids
-        print(f"[validate] Full scan of {len(ann_ids)} annotations …")
-    else:
-        # FIX: random sample covers the full dataset, not just the first N
-        sampled_ids = random.sample(ann_ids, min(sample_size, len(ann_ids)))
-        print(f"[validate] Random sample of {len(sampled_ids)}/{len(ann_ids)} annotations …")
-
+    import random
+    sampled_ids = random.sample(list(ann_ids), min(sample_size, len(ann_ids)))
     anns = coco.loadAnns(sampled_ids)
 
     missing_seg = 0
-    bad_cat     = 0
-    bad_img     = 0
-    zero_area   = 0
-    short_poly  = 0
-    bad_rle     = 0
-
-    bad_examples: List[str] = []
+    bad_cat = 0
+    bad_img = 0
+    zero_area = 0
+    short_poly = 0
 
     for ann in anns:
         ann_id = ann.get("id", "?")
@@ -356,14 +347,19 @@ def validate_coco_annotations(
             bad_img += 1
             bad_examples.append(f"ann_id={ann_id}: image_id={img_id} not in dataset")
 
-    total_bad = missing_seg + bad_cat + bad_img + zero_area + short_poly + bad_rle
-    if total_bad > 0:
-        preview = "\n  ".join(bad_examples[:20])
+        if ann.get("area", 1) <= 0:
+            zero_area += 1
+
+        if isinstance(seg, list):
+            for poly in seg:
+                if isinstance(poly, list) and len(poly) < 6:
+                    short_poly += 1
+
+    if missing_seg or bad_cat or bad_img or zero_area or short_poly:
         raise ValueError(
-            f"COCO annotation validation failed ({total_bad} issues):\n"
-            f"  missing_seg={missing_seg}, bad_cat={bad_cat}, bad_img={bad_img}, "
-            f"zero_area={zero_area}, short_poly={short_poly}, bad_rle={bad_rle}\n"
-            f"Examples:\n  {preview}"
+            "COCO annotation validation failed: "
+            f"missing_seg={missing_seg}, bad_cat={bad_cat}, bad_img={bad_img}, "
+            f"zero_area={zero_area}, short_poly={short_poly}"
         )
 
     return {

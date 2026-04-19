@@ -28,9 +28,13 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Add Mask2Former to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Mask2Former"))
 
 import cv2
 import numpy as np
@@ -112,6 +116,7 @@ class FashionPredictor:
 
         # Class metadata
         self.metadata = MetadataCatalog.get(cfg.DATASETS.TEST[0])
+        self.class_names = FASHION_CLASSES  # default, can be overridden
 
     @torch.no_grad()
     def predict(self, image_bgr: np.ndarray) -> Instances:
@@ -157,6 +162,7 @@ def render_predictions(
     bgr_image: np.ndarray,
     instances: Instances,
     metadata,
+    class_names: List[str],
     alpha: float = 0.5,
     sort_by_area: bool = True,
     max_detections: int = 50,
@@ -175,7 +181,7 @@ def render_predictions(
     if n == 0:
         return bgr_image
 
-    masks   = instances.pred_masks[:n].numpy()    # (N, H, W) bool
+    masks   = instances.pred_masks[:n].numpy().astype(bool)  # (N, H, W) bool
     classes = instances.pred_classes[:n].numpy()  # (N,) int
     scores  = instances.scores[:n].numpy()        # (N,) float
 
@@ -184,27 +190,67 @@ def render_predictions(
         order = np.argsort(-areas)                # descending area → paint big first
         masks, classes, scores = masks[order], classes[order], scores[order]
 
+    # Use distinct per-INSTANCE colours (not per-class) for clarity
+    INSTANCE_COLOURS = [
+        (0, 255, 0),     # green
+        (255, 0, 0),     # blue (BGR)
+        (0, 0, 255),     # red (BGR)
+        (255, 255, 0),   # cyan
+        (0, 255, 255),   # yellow
+        (255, 0, 255),   # magenta
+        (255, 128, 0),   # light blue
+        (0, 128, 255),   # orange
+        (128, 0, 255),   # pink
+        (0, 255, 128),   # spring green
+    ]
+
     overlay = output.copy()
-    for mask, cls_id, score in zip(masks, classes, scores):
-        colour = COLOUR_PALETTE[cls_id % len(COLOUR_PALETTE)].astype(np.float32)
+    for idx, (mask, cls_id, score) in enumerate(zip(masks, classes, scores)):
+        colour = np.array(INSTANCE_COLOURS[idx % len(INSTANCE_COLOURS)], dtype=np.float32)
         overlay[mask] = colour
 
     # Alpha blend
     blended = cv2.addWeighted(output, 1 - alpha, overlay, alpha, 0)
 
-    # Draw per-instance labels above mask centroid
-    for mask, cls_id, score in zip(masks, classes, scores):
+    # Draw contour outlines for each instance
+    for idx, (mask, cls_id, score) in enumerate(zip(masks, classes, scores)):
+        contours, _ = cv2.findContours(
+            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        colour = INSTANCE_COLOURS[idx % len(INSTANCE_COLOURS)]
+        cv2.drawContours(blended, contours, -1, colour, 2)
+
+    # Scale font based on image size
+    h, w = bgr_image.shape[:2]
+    font_scale = max(0.5, min(h, w) / 1000.0)
+    thickness = max(1, int(font_scale * 2))
+
+    # Draw per-instance labels with background box
+    for idx, (mask, cls_id, score) in enumerate(zip(masks, classes, scores)):
         ys, xs = np.where(mask)
         if len(xs) == 0:
             continue
-        cx, cy = int(xs.mean()), int(ys.mean())
-        label = f"{FASHION_CLASSES[cls_id]}: {score:.2f}"
-        # Shadow
-        cv2.putText(blended, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45, (0, 0, 0), 2, cv2.LINE_AA)
-        # Text
-        cv2.putText(blended, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        # Place label at top of mask
+        cx, cy = int(xs.mean()), int(ys.min()) - 10
+        cy = max(int(font_scale * 20), cy)  # keep on screen
+
+        label = f"{class_names[cls_id]}: {score:.0%}"
+        (tw, th), baseline = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+        )
+        colour = INSTANCE_COLOURS[idx % len(INSTANCE_COLOURS)]
+        # Background rectangle
+        cv2.rectangle(
+            blended,
+            (cx - 2, cy - th - baseline - 2),
+            (cx + tw + 2, cy + baseline + 2),
+            colour, -1,
+        )
+        # Text (black on coloured background)
+        cv2.putText(
+            blended, label, (cx, cy),
+            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness, cv2.LINE_AA,
+        )
 
     return blended.astype(np.uint8)
 
@@ -228,6 +274,7 @@ def save_side_by_side(
 def instances_to_json(
     instances: Instances,
     image_path: str,
+    class_names: List[str],
 ) -> Dict:
     """Convert Instances to a JSON-serialisable dict."""
     records = []
@@ -240,7 +287,7 @@ def instances_to_json(
 
         records.append({
             "class_id":    int(instances.pred_classes[i]),
-            "class_name":  FASHION_CLASSES[int(instances.pred_classes[i])],
+            "class_name":  class_names[int(instances.pred_classes[i])],
             "score":       float(instances.scores[i]),
             "bbox":        instances.pred_boxes[i].tensor[0].tolist()
                            if instances.has("pred_boxes") else None,
@@ -279,6 +326,7 @@ def process_single(
         bgr,
         instances,
         predictor.metadata,
+        class_names=predictor.class_names,
         alpha=alpha,
         max_detections=max_detections,
     )
@@ -287,7 +335,7 @@ def process_single(
     vis_path = os.path.join(output_dir, f"{stem}_pred.jpg")
     save_side_by_side(bgr, rendered, vis_path)
 
-    result = instances_to_json(instances, image_path)
+    result = instances_to_json(instances, image_path, class_names=predictor.class_names)
 
     if save_json:
         json_path = os.path.join(output_dir, f"{stem}_pred.json")
@@ -345,24 +393,96 @@ def get_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip saving JSON prediction files",
     )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Force device: 'cpu', 'cuda', or 'mps'. Auto-detected if omitted.",
+    )
+    parser.add_argument(
+        "--num-classes",
+        type=int,
+        default=None,
+        help="Number of classes the model was trained on (auto-detected from weights if omitted)",
+    )
+    parser.add_argument(
+        "--classes",
+        nargs="+",
+        default=None,
+        help="Ordered list of class names the model was trained on",
+    )
+    parser.add_argument(
+        "--classes-file",
+        default=None,
+        help="Path to a text file with one class name per line",
+    )
     return parser
+
+
+def _detect_num_classes(weights_path: str) -> int:
+    """Read the checkpoint to determine how many classes the model was trained on."""
+    ckpt = torch.load(weights_path, map_location="cpu")
+    state = ckpt.get("model", ckpt)
+    for key in ("sem_seg_head.predictor.class_embed.bias",
+                "sem_seg_head.predictor.class_embed.weight"):
+        if key in state:
+            return state[key].shape[0] - 1  # subtract no-object class
+    return None
 
 
 def main(args: argparse.Namespace) -> None:
     logging.basicConfig(level=logging.INFO)
+
+    # --- Resolve class names ---
+    class_names = None
+    if args.classes_file:
+        with open(args.classes_file) as f:
+            class_names = [line.strip() for line in f if line.strip()]
+    elif args.classes:
+        class_names = args.classes
+
+    # --- Resolve num_classes ---
+    num_classes = args.num_classes
+    if num_classes is None:
+        num_classes = _detect_num_classes(args.weights)
+        if num_classes is not None:
+            logger.info(f"Auto-detected {num_classes} classes from checkpoint")
+        else:
+            num_classes = len(FASHION_CLASSES)
+            logger.warning(f"Could not detect num_classes from checkpoint, defaulting to {num_classes}")
+
+    if class_names is None:
+        if num_classes <= len(FASHION_CLASSES):
+            class_names = FASHION_CLASSES[:num_classes]
+        else:
+            class_names = [f"class_{i}" for i in range(num_classes)]
 
     register_fashion_datasets()
 
     cfg = build_cfg(
         output_dir=args.output_dir,
         backbone=args.backbone,
+        num_classes=num_classes,
     )
+
+    # Determine device
+    if args.device:
+        device = args.device
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
+    cfg.defrost()
+    cfg.MODEL.DEVICE = device
+    cfg.freeze()
+    logger.info(f"Using device: {device}")
 
     predictor = FashionPredictor(
         cfg,
         weights_path=args.weights,
         score_threshold=args.score_threshold,
     )
+    # Override class names for visualization
+    predictor.class_names = class_names
 
     os.makedirs(args.output_dir, exist_ok=True)
     supported_ext = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
