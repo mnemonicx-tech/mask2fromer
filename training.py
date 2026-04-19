@@ -95,7 +95,7 @@ class FashionTrainer(DefaultTrainer):
             COCOInstanceNewBaselineDatasetMapper,
         )
 
-        mapper = COCOInstanceNewBaselineDatasetMapper.from_config(cfg, is_train=True)
+        mapper = COCOInstanceNewBaselineDatasetMapper(cfg, is_train=True)
         return build_detection_train_loader(
             cfg,
             mapper=mapper,
