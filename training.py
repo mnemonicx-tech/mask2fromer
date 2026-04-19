@@ -101,8 +101,6 @@ class FashionTrainer(DefaultTrainer):
             cfg,
             mapper=mapper,
             num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=(num_workers > 0),
         )
 
     @classmethod
