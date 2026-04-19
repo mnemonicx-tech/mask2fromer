@@ -96,7 +96,14 @@ class FashionTrainer(DefaultTrainer):
             use_instance_mask=True,
             instance_mask_format="bitmask",
         )
-        return build_detection_train_loader(cfg, mapper=mapper)
+        num_workers = max(cfg.DATALOADER.NUM_WORKERS, 16)
+        return build_detection_train_loader(
+            cfg,
+            mapper=mapper,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=(num_workers > 0),
+        )
 
     @classmethod
     def build_optimizer(cls, cfg: CfgNode, model: torch.nn.Module):
@@ -128,9 +135,17 @@ class GradAccumAMPTrainer(AMPTrainer):
 
         for _ in range(self.accum_steps):
             data = next(self._data_loader_iter)
-            with torch.cuda.amp.autocast(enabled=True):
-                loss_dict = self.model(data)
-                losses = sum(loss_dict.values()) / self.accum_steps
+            try:
+                with torch.cuda.amp.autocast(enabled=True):
+                    loss_dict = self.model(data)
+                    losses = sum(loss_dict.values()) / self.accum_steps
+            except (ValueError, RuntimeError) as e:
+                # Skip batches with NaN cost matrices or other numerical errors
+                logger.warning(f"Skipping bad batch: {e}")
+                self.optimizer.zero_grad(set_to_none=True)
+                data_time = time.perf_counter() - start
+                self.storage.put_scalars(data_time=data_time)
+                return
 
             self.grad_scaler.scale(losses).backward()
             for key, val in loss_dict.items():

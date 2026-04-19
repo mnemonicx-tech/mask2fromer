@@ -155,7 +155,7 @@ def build_cfg(
     # Dataloader
     # -----------------------------------------------------------------------
     # 28 CPUs / 120 GB RAM: 12 workers saturate the GPU without thrashing.
-    cfg.DATALOADER.NUM_WORKERS           = 12
+    cfg.DATALOADER.NUM_WORKERS           = 16
     cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
 
     # -----------------------------------------------------------------------
