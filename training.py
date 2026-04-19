@@ -25,13 +25,16 @@ except ImportError:
 import torch
 
 # ── Detectron2 / numpy compat monkey-patch ──────────────────────────────────
+# np.bool was removed in numpy 1.24; detectron2 v0.6 still uses it in masks.py
 import numpy as _np
-_np.bool = bool
+_np.bool = bool  # safe: bool is what np.bool always was
 
 # ── A100 / Ampere+ optimizations ─────────────────────────────────────────
+# TF32 gives ~2× throughput on matmuls with negligible precision loss.
 torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32        = True
-torch.backends.cudnn.benchmark         = True
+torch.backends.cudnn.allow_tf32 = True
+# Auto-tune convolution algorithms for best perf on this GPU
+torch.backends.cudnn.benchmark = True
 
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
@@ -106,10 +109,7 @@ class FashionTrainer(DefaultTrainer):
             use_instance_mask=True,
             instance_mask_format="bitmask",
         )
-
-        # FIX #5: Respect cfg.DATALOADER.NUM_WORKERS as configured/overridden.
-        #          Previous code forced a minimum of 16, ignoring --num-workers CLI arg.
-        num_workers = cfg.DATALOADER.NUM_WORKERS
+        num_workers = max(cfg.DATALOADER.NUM_WORKERS, 16)
         return build_detection_train_loader(
             cfg,
             mapper=mapper,
@@ -156,32 +156,10 @@ class GradAccumAMPTrainer(AMPTrainer):
             try:
                 with torch.cuda.amp.autocast(enabled=True):
                     loss_dict = self.model(data)
-                    losses    = sum(loss_dict.values()) / self.accum_steps
-
+                    losses = sum(loss_dict.values()) / self.accum_steps
             except (ValueError, RuntimeError) as e:
-                logger.warning(
-                    f"[iter {self.iter} accum_step {step}] Exception in forward pass, "
-                    f"skipping batch: {e}"
-                )
-                self.optimizer.zero_grad(set_to_none=True)
-                data_time = time.perf_counter() - start
-                self.storage.put_scalars(data_time=data_time)
-                return
-
-            # ----------------------------------------------------------------
-            # FIX #3: Explicit NaN/Inf guard — catches silent numerical
-            #          failures that don't raise exceptions (e.g. corrupt mask
-            #          producing inf cost in the Hungarian matcher).
-            # ----------------------------------------------------------------
-            if not torch.isfinite(losses):
-                per_loss_str = ", ".join(
-                    f"{k}={v.item():.4f}" for k, v in loss_dict.items()
-                )
-                logger.warning(
-                    f"[iter {self.iter} accum_step {step}] Non-finite loss detected "
-                    f"(total={losses.item():.4f}). Skipping batch.\n"
-                    f"  Per-loss breakdown: {per_loss_str}"
-                )
+                # Skip batches with NaN cost matrices or other numerical errors
+                logger.warning(f"Skipping bad batch: {e}")
                 self.optimizer.zero_grad(set_to_none=True)
                 data_time = time.perf_counter() - start
                 self.storage.put_scalars(data_time=data_time)
@@ -320,29 +298,33 @@ def train(
 
 def get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Mask2Former fashion training")
-    parser.add_argument("--output-dir",    default="./output",  help="Output directory for logs/checkpoints")
-    parser.add_argument("--backbone",      default="R50",       choices=["R50", "SWIN_T"])
-    parser.add_argument("--resume",        action="store_true", help="Resume from latest checkpoint")
-    parser.add_argument("--num-gpus",      type=int, default=1)
-    parser.add_argument("--num-machines",  type=int, default=1)
-    parser.add_argument("--machine-rank",  type=int, default=0)
-    parser.add_argument("--dist-url",      default="auto")
-    parser.add_argument("--max-iter",      type=int, default=None)
-    parser.add_argument("--grad-accum-steps", type=int, default=1)
-    parser.add_argument("--ims-per-batch", type=int, default=None)
-    parser.add_argument("--num-workers",   type=int, default=None)
-    parser.add_argument("--smoke-test",    action="store_true", help="2000-iter sanity run")
-    parser.add_argument("--preflight-only",action="store_true", help="Validate dataset and exit")
-    parser.add_argument("--full-scan",     action="store_true", help="Full annotation scan during preflight (slow)")
-    parser.add_argument("--data-root",     default=None)
-    parser.add_argument("--train-json",    default=None)
-    parser.add_argument("--val-json",      default=None)
-    parser.add_argument("--train-images",  default=None)
-    parser.add_argument("--val-images",    default=None)
-    parser.add_argument("--classes-file",  default=None)
-    parser.add_argument("--freeze-backbone", action="store_true")
-    parser.add_argument("--log-gpu-mem-interval", type=int, default=100)
-    parser.add_argument("opts", nargs=argparse.REMAINDER, help="Extra Detectron2 overrides")
+    parser.add_argument("--output-dir", default="./output", help="Output directory for logs/checkpoints")
+    parser.add_argument("--backbone", default="R50", choices=["R50", "SWIN_T"], help="Backbone model")
+    parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
+    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs")
+    parser.add_argument("--num-machines", type=int, default=1)
+    parser.add_argument("--machine-rank", type=int, default=0)
+    parser.add_argument("--dist-url", default="auto")
+    parser.add_argument("--max-iter", type=int, default=None, help="Override max iterations")
+    parser.add_argument("--grad-accum-steps", type=int, default=1, help="Gradient accumulation steps (1 = no accumulation)")
+    parser.add_argument("--ims-per-batch", type=int, default=None, help="Override SOLVER.IMS_PER_BATCH")
+    parser.add_argument("--num-workers", type=int, default=None, help="Override DATALOADER.NUM_WORKERS")
+    parser.add_argument("--smoke-test", action="store_true", help="Run a short 2000-iteration sanity test")
+    parser.add_argument("--preflight-only", action="store_true", help="Only run dataset validation and exit")
+    parser.add_argument("--data-root", default=None, help="Dataset root with images/ and annotations/")
+    parser.add_argument("--train-json", default=None, help="Path to train COCO JSON")
+    parser.add_argument("--val-json", default=None, help="Path to val COCO JSON")
+    parser.add_argument("--train-images", default=None, help="Path to train image directory")
+    parser.add_argument("--val-images", default=None, help="Path to val image directory")
+    parser.add_argument("--classes-file", default=None, help="Path to class list file (1 class per line)")
+    parser.add_argument("--freeze-backbone", action="store_true", help="Freeze backbone for fast warmup")
+    parser.add_argument(
+        "--log-gpu-mem-interval",
+        type=int,
+        default=100,
+        help="Log GPU memory stats every N iterations",
+    )
+    parser.add_argument("opts", nargs=argparse.REMAINDER, help="Additional Detectron2 overrides")
     return parser
 
 

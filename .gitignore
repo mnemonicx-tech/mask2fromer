@@ -1,1 +1,10 @@
 Mask2Former/
+output_models/
+images/
+inference_results/
+.vscode/
+.venv/
+*.pyc
+__pycache__/
+*.log
+output_models/

@@ -105,7 +105,33 @@ else
     cd ..
 fi
 
-echo "==> 6/7  Downloading R50 + Mask2Former COCO instance-seg config"
+echo "==> 6/7  Patching detectron2 for numpy>=1.24 / Pillow>=10 compat"
+# np.bool / np.int / np.float removed in numpy 1.24+; PIL.Image.LINEAR removed in Pillow 10+
+python3 - <<'PYEOF'
+import re, pathlib
+
+d2 = pathlib.Path(__import__("detectron2").__file__).parent
+
+# masks.py: np.bool -> bool (use negative lookahead to preserve np.bool_ etc.)
+masks = d2 / "structures/masks.py"
+if masks.exists():
+    txt = masks.read_text()
+    txt = re.sub(r'np\.bool(?![_\w0-9])', 'bool', txt)
+    masks.write_text(txt)
+    print(f"  patched {masks}")
+
+# transform.py: Image.LINEAR -> Image.BILINEAR
+transform = d2 / "data/transforms/transform.py"
+if transform.exists():
+    txt = transform.read_text()
+    txt = txt.replace("Image.LINEAR", "Image.BILINEAR")
+    transform.write_text(txt)
+    print(f"  patched {transform}")
+
+print("  Patches applied.")
+PYEOF
+
+echo "==> 7/7  Downloading R50 + Mask2Former COCO instance-seg config"
 # Pre-download the official config weights so training starts immediately
 python - <<'EOF'
 from detectron2.utils.file_io import PathManager
@@ -115,7 +141,7 @@ PathManager.get_local_path(url)
 print("R-50 backbone weights cached.")
 EOF
 
-echo "==> 7/7  Final environment info"
+echo "==> 8/8  Final environment info"
 python -c "import torch; print('Torch:', torch.__version__, '| CUDA available:', torch.cuda.is_available())"
 
 echo ""

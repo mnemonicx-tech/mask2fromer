@@ -81,7 +81,7 @@ def build_cfg(
     # Model head — set num classes correctly
     # -----------------------------------------------------------------------
     cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = num_classes
-    # 200 queries gives headroom for dense multi-garment scenes (official default is 100)
+    # 97 classes → 200 queries gives headroom for dense multi-garment scenes
     cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES = 200
 
     # -----------------------------------------------------------------------
@@ -100,24 +100,28 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Input / augmentation
     # -----------------------------------------------------------------------
-    cfg.INPUT.MIN_SIZE_TRAIN  = (800, 832, 864, 896, 928, 960, 992, 1024,
-                                  1056, 1088, 1120, 1152, 1184, 1216, 1248, 1280)
-    cfg.INPUT.MAX_SIZE_TRAIN  = 1536
-    cfg.INPUT.MIN_SIZE_TEST   = 1024
-    cfg.INPUT.MAX_SIZE_TEST   = 1536
-    cfg.INPUT.FORMAT          = "RGB"
-    cfg.INPUT.RANDOM_FLIP     = "horizontal"
+    # A100-80GB: push resolution high for sharp garment edges & fine seams.
+    # Multi-scale training with bias toward larger sizes for detail.
+    cfg.INPUT.MIN_SIZE_TRAIN       = (800, 832, 864, 896, 928, 960, 992, 1024, 1056, 1088, 1120, 1152, 1184, 1216, 1248, 1280)
+    cfg.INPUT.MAX_SIZE_TRAIN       = 1536
+    cfg.INPUT.MIN_SIZE_TEST        = 1024
+    cfg.INPUT.MAX_SIZE_TEST        = 1536
+    cfg.INPUT.FORMAT               = "RGB"
+    cfg.INPUT.RANDOM_FLIP          = "horizontal"
 
     # -----------------------------------------------------------------------
     # Solver — tuned for A100-80GB PCIe (28 CPUs, 120 GB RAM)
     # -----------------------------------------------------------------------
-    cfg.SOLVER.IMS_PER_BATCH = 16
+    # A100-80GB fits 16 images/iter at 1024–1280px with AMP.
+    # Matches official Mask2Former baseline batch size → use official LR.
+    cfg.SOLVER.IMS_PER_BATCH           = 16
 
-    cfg.SOLVER.MAX_ITER      = 100_000
+    _EFFECTIVE_ITERS = 100_000
+    cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS
 
     # Official Mask2Former LR for bs16
-    cfg.SOLVER.BASE_LR           = 1e-4
-    cfg.SOLVER.WEIGHT_DECAY      = 0.05
+    cfg.SOLVER.BASE_LR                 = 1e-4
+    cfg.SOLVER.WEIGHT_DECAY            = 0.05
 
     cfg.SOLVER.OPTIMIZER             = "ADAMW"
     cfg.SOLVER.BACKBONE_MULTIPLIER   = 0.1   # lower LR for pretrained backbone
@@ -154,8 +158,9 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Dataloader
     # -----------------------------------------------------------------------
-    cfg.DATALOADER.NUM_WORKERS               = 16
-    cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS  = True
+    # 28 CPUs / 120 GB RAM: 12 workers saturate the GPU without thrashing.
+    cfg.DATALOADER.NUM_WORKERS           = 16
+    cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
 
     # -----------------------------------------------------------------------
     # Output
