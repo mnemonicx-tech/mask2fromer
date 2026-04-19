@@ -19,10 +19,8 @@ from detectron2.data.datasets import register_coco_instances
 from detectron2.data import MetadataCatalog, DatasetCatalog
 
 # ---------------------------------------------------------------------------
-# Fashion class names expected in COCO JSON category "name".
-# Keep order aligned to dataset category-id ordering.
-# FIX #1: Removed duplicate/typo "opwear_women_trench_coat" — was causing
-#          99 entries vs NUM_CLASSES=98, leading to index OOB → NaN loss.
+# Fashion class names — must match classes.txt / COCO JSON category order exactly.
+# Source of truth: /ephemeral/training_data/classes.txt (97 classes)
 # ---------------------------------------------------------------------------
 FASHION_CLASSES = [
     "bottomwear_men_cargo_pants",
@@ -46,7 +44,6 @@ FASHION_CLASSES = [
     "bottomwear_women_mom_fit_jeans",
     "bottomwear_women_shorts",
     "bottomwear_women_skinny_jeans",
-    "bottomwear_women_skirt",
     "bottomwear_women_trousers",
     "bottomwear_women_wide_leg_jeans",
     "ethnic_wear_men_long_kurta",
@@ -114,7 +111,6 @@ FASHION_CLASSES = [
     "topwear_women_sweatshirt",
     "topwear_women_t_shirt",
     "topwear_women_top",
-    "topwear_women_trench_coat",
     "tunic_nan_women",
     "western_wear_women_bodycon_dress",
     "western_wear_women_jumpsuit",
@@ -126,8 +122,8 @@ FASHION_CLASSES = [
     "western_wear_women_wrap_dress",
 ]
 
-assert len(FASHION_CLASSES) == 98, (
-    f"FASHION_CLASSES must have exactly 98 entries, got {len(FASHION_CLASSES)}. "
+assert len(FASHION_CLASSES) == 97, (
+    f"FASHION_CLASSES must have exactly 97 entries, got {len(FASHION_CLASSES)}. "
     "Check for duplicates or missing classes."
 )
 
@@ -168,7 +164,7 @@ def get_datasets() -> Dict[str, Dict[str, str]]:
       FASHION_TRAIN_IMAGES
       FASHION_VAL_IMAGES
     """
-    data_root = os.environ.get("FASHION_DATA_ROOT", "/mnt/large_volume/training_data")
+    data_root = os.environ.get("FASHION_DATA_ROOT", "/ephemeral/training_data")
 
     train_json = os.environ.get(
         "FASHION_TRAIN_JSON",
@@ -289,15 +285,19 @@ def validate_coco_annotations(
     if len(ann_ids) == 0:
         raise ValueError(f"No annotations found in {json_file}")
 
-    import random
-    sampled_ids = random.sample(list(ann_ids), min(sample_size, len(ann_ids)))
+    if full_scan:
+        sampled_ids = ann_ids
+    else:
+        sampled_ids = random.sample(ann_ids, min(sample_size, len(ann_ids)))
     anns = coco.loadAnns(sampled_ids)
 
     missing_seg = 0
     bad_cat = 0
     bad_img = 0
+    bad_rle = 0
     zero_area = 0
     short_poly = 0
+    bad_examples: List[str] = []
 
     for ann in anns:
         ann_id = ann.get("id", "?")
@@ -347,19 +347,19 @@ def validate_coco_annotations(
             bad_img += 1
             bad_examples.append(f"ann_id={ann_id}: image_id={img_id} not in dataset")
 
-        if ann.get("area", 1) <= 0:
-            zero_area += 1
+    total_bad = missing_seg + bad_cat + bad_img + bad_rle + zero_area + short_poly
+    if bad_examples:
+        import logging
+        _log = logging.getLogger("register_dataset")
+        _log.warning("Annotation issues found (%d total):", total_bad)
+        for ex in bad_examples[:20]:
+            _log.warning("  %s", ex)
 
-        if isinstance(seg, list):
-            for poly in seg:
-                if isinstance(poly, list) and len(poly) < 6:
-                    short_poly += 1
-
-    if missing_seg or bad_cat or bad_img or zero_area or short_poly:
+    if missing_seg or bad_cat or bad_img or bad_rle or zero_area or short_poly:
         raise ValueError(
             "COCO annotation validation failed: "
             f"missing_seg={missing_seg}, bad_cat={bad_cat}, bad_img={bad_img}, "
-            f"zero_area={zero_area}, short_poly={short_poly}"
+            f"bad_rle={bad_rle}, zero_area={zero_area}, short_poly={short_poly}"
         )
 
     return {

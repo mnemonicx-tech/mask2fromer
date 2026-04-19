@@ -2,7 +2,7 @@
 config_setup.py
 ---------------
 Builds and returns a Detectron2 CfgNode for Mask2Former instance segmentation
-tuned for an RTX A4000 (16 GB VRAM) with 98 fashion classes.
+tuned for an RTX A4000 (16 GB VRAM) with 97 fashion classes.
 
 Backbone choice: ResNet-50-FPN
   - Better out-of-the-box convergence than Swin-T for domain-specific data
@@ -45,7 +45,7 @@ def build_cfg(
     output_dir: str = "./output",
     resume: bool = False,
     backbone: str = "R50",          # "R50" | "SWIN_T"
-    num_classes: int = 98,
+    num_classes: int = 97,
     train_dataset: str = "fashion_train",
     val_dataset: str = "fashion_val",
 ) -> "CfgNode":
@@ -57,7 +57,7 @@ def build_cfg(
     output_dir       : Where to write checkpoints and logs.
     resume           : If True, resume from last checkpoint in output_dir.
     backbone         : "R50" for ResNet-50, "SWIN_T" for Swin-Tiny.
-    num_classes      : Number of foreground classes (98 for this project).
+    num_classes      : Number of foreground classes (97 for this project).
     train_dataset    : Registered dataset name for training split.
     val_dataset      : Registered dataset name for validation split.
     """
@@ -100,21 +100,25 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Input / augmentation
     # -----------------------------------------------------------------------
-    # A100-80GB: push resolution high for sharp garment edges & fine seams.
-    # Multi-scale training with bias toward larger sizes for detail.
-    cfg.INPUT.MIN_SIZE_TRAIN       = (800, 832, 864, 896, 928, 960, 992, 1024, 1056, 1088, 1120, 1152, 1184, 1216, 1248, 1280)
-    cfg.INPUT.MAX_SIZE_TRAIN       = 1536
-    cfg.INPUT.MIN_SIZE_TEST        = 1024
-    cfg.INPUT.MAX_SIZE_TEST        = 1536
+    # LSJ (Large Scale Jittering) augmentation — used by COCOInstanceNewBaselineDatasetMapper
+    cfg.INPUT.IMAGE_SIZE           = 1024
+    cfg.INPUT.MIN_SCALE            = 0.1
+    cfg.INPUT.MAX_SCALE            = 2.0
+    cfg.INPUT.DATASET_MAPPER_NAME  = "coco_instance_lsj"
+    # Legacy ResizeShortestEdge keys (used by test-time inference)
+    cfg.INPUT.MIN_SIZE_TRAIN       = (640, 672, 704, 736, 768, 800)
+    cfg.INPUT.MAX_SIZE_TRAIN       = 1333
+    cfg.INPUT.MIN_SIZE_TEST        = 800
+    cfg.INPUT.MAX_SIZE_TEST        = 1333
     cfg.INPUT.FORMAT               = "RGB"
     cfg.INPUT.RANDOM_FLIP          = "horizontal"
 
     # -----------------------------------------------------------------------
     # Solver — tuned for A100-80GB PCIe (28 CPUs, 120 GB RAM)
     # -----------------------------------------------------------------------
-    # A100-80GB fits 16 images/iter at 1024–1280px with AMP.
-    # Matches official Mask2Former baseline batch size → use official LR.
-    cfg.SOLVER.IMS_PER_BATCH           = 16
+    # A100-80GB fits 8 images/iter at 1024×1024 LSJ crops with AMP.
+    # Use grad_accum_steps=2 to achieve effective bs16 if needed.
+    cfg.SOLVER.IMS_PER_BATCH           = 8
 
     _EFFECTIVE_ITERS = 100_000
     cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS

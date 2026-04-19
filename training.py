@@ -91,24 +91,11 @@ class FashionTrainer(DefaultTrainer):
 
     @classmethod
     def build_train_loader(cls, cfg: CfgNode):
-        from detectron2.data import DatasetMapper
-
-        augmentations = [
-            T.ResizeShortestEdge(
-                short_edge_length=cfg.INPUT.MIN_SIZE_TRAIN,
-                max_size=cfg.INPUT.MAX_SIZE_TRAIN,
-                sample_style="choice",
-            ),
-            T.RandomFlip(horizontal=True, vertical=False),
-        ]
-
-        mapper = DatasetMapper(
-            cfg,
-            is_train=True,
-            augmentations=augmentations,
-            use_instance_mask=True,
-            instance_mask_format="bitmask",
+        from mask2former.data.dataset_mappers.coco_instance_new_baseline_dataset_mapper import (
+            COCOInstanceNewBaselineDatasetMapper,
         )
+
+        mapper = COCOInstanceNewBaselineDatasetMapper.from_config(cfg, is_train=True)
         return build_detection_train_loader(
             cfg,
             mapper=mapper,
@@ -272,6 +259,16 @@ def train(
         checkpointer.load(cfg.MODEL.WEIGHTS)
         start_iter = 0
 
+    # Fail-fast if checkpoint has NaN/Inf weights (e.g. from a previous corrupted run)
+    if torch.cuda.is_available():
+        for name, param in model.named_parameters():
+            if not torch.isfinite(param).all():
+                raise RuntimeError(
+                    f"Loaded checkpoint contains NaN/Inf in parameter '{name}'. "
+                    f"Cannot resume from a corrupted checkpoint. "
+                    f"Use an earlier clean checkpoint or start fresh."
+                )
+
     trainer           = GradAccumAMPTrainer(model, data_loader, optimizer, accum_steps=grad_accum_steps)
     trainer.clip_cfg  = cfg.SOLVER.CLIP_GRADIENTS
 
@@ -327,6 +324,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-images", default=None, help="Path to val image directory")
     parser.add_argument("--classes-file", default=None, help="Path to class list file (1 class per line)")
     parser.add_argument("--freeze-backbone", action="store_true", help="Freeze backbone for fast warmup")
+    parser.add_argument("--full-scan", action="store_true", help="Full annotation scan during preflight (slow)")
     parser.add_argument(
         "--log-gpu-mem-interval",
         type=int,
@@ -345,7 +343,7 @@ def main(args: argparse.Namespace) -> None:
     if args.val_images:     os.environ["FASHION_VAL_IMAGES"]   = args.val_images
     if args.classes_file:   os.environ["FASHION_CLASSES_FILE"] = args.classes_file
 
-    run_preflight_checks(full_scan=getattr(args, "full_scan", False))
+    run_preflight_checks(full_scan=args.full_scan)
     if args.preflight_only:
         print("[training] Preflight checks passed.")
         return
