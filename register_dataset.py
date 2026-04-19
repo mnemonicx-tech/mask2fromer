@@ -111,7 +111,6 @@ FASHION_CLASSES = [
     "topwear_women_t_shirt",
     "topwear_women_top",
     "topwear_women_trench_coat",
-    "opwear_women_trench_coat",
     "tunic_nan_women",
     "western_wear_women_bodycon_dress",
     "western_wear_women_jumpsuit",
@@ -271,12 +270,15 @@ def validate_coco_annotations(json_file: str, sample_size: int = 5000) -> Dict[s
     if len(ann_ids) == 0:
         raise ValueError(f"No annotations found in {json_file}")
 
-    sampled_ids = ann_ids[: min(sample_size, len(ann_ids))]
+    import random
+    sampled_ids = random.sample(list(ann_ids), min(sample_size, len(ann_ids)))
     anns = coco.loadAnns(sampled_ids)
 
     missing_seg = 0
     bad_cat = 0
     bad_img = 0
+    zero_area = 0
+    short_poly = 0
 
     for ann in anns:
         seg = ann.get("segmentation", None)
@@ -289,10 +291,19 @@ def validate_coco_annotations(json_file: str, sample_size: int = 5000) -> Dict[s
         if ann.get("image_id") not in img_ids:
             bad_img += 1
 
-    if missing_seg or bad_cat or bad_img:
+        if ann.get("area", 1) <= 0:
+            zero_area += 1
+
+        if isinstance(seg, list):
+            for poly in seg:
+                if isinstance(poly, list) and len(poly) < 6:
+                    short_poly += 1
+
+    if missing_seg or bad_cat or bad_img or zero_area or short_poly:
         raise ValueError(
             "COCO annotation validation failed: "
-            f"missing_segmentation={missing_seg}, bad_category_id={bad_cat}, bad_image_id={bad_img}"
+            f"missing_seg={missing_seg}, bad_cat={bad_cat}, bad_img={bad_img}, "
+            f"zero_area={zero_area}, short_poly={short_poly}"
         )
 
     return {
