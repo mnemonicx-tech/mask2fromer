@@ -55,6 +55,7 @@ def build_command() -> list:
     cmd = [
         sys.executable, "training.py",
         "--resume",
+        "--train-only",          # skip all eval during training — run offline later
         "--output-dir",      CONFIG["output_dir"],
         "--classes-file",    CONFIG["classes_file"],
         "--train-json",      CONFIG["train_json"],

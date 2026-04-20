@@ -131,9 +131,10 @@ def build_cfg(
     cfg.SOLVER.BACKBONE_MULTIPLIER   = 0.1   # lower LR for pretrained backbone
 
     # Cosine decay with linear warmup
+    # 5000 warmup iters ≈ 2% of 267K-image run; avoids cold-start LR spikes.
     cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupCosineLR"
     cfg.SOLVER.WARMUP_FACTOR     = 1.0 / 1000
-    cfg.SOLVER.WARMUP_ITERS      = 1000
+    cfg.SOLVER.WARMUP_ITERS      = 5_000
     cfg.SOLVER.WARMUP_METHOD     = "linear"
 
     # Clip gradients to prevent spikes on fashion's long-tail distribution

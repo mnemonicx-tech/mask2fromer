@@ -144,8 +144,12 @@ class GradAccumAMPTrainer(AMPTrainer):
                     loss_dict = self.model(data)
                     losses = sum(loss_dict.values()) / self.accum_steps
             except (ValueError, RuntimeError) as e:
-                logger.warning(f"Skipping bad batch (exception): {e}")
+                logger.warning(f"Skipping bad batch (exception) at accum step {step}: {e}")
                 self.optimizer.zero_grad(set_to_none=True)
+                # If any backward already ran this step, let the scaler record the
+                # failed step so it can adapt its scale factor.
+                if step > 0:
+                    self.grad_scaler.update()
                 data_time = time.perf_counter() - start
                 self.storage.put_scalars(data_time=data_time)
                 return
@@ -153,10 +157,14 @@ class GradAccumAMPTrainer(AMPTrainer):
             # NaN/Inf guard: skip batch before backward() corrupts weights
             if not torch.isfinite(losses):
                 logger.warning(
-                    f"[iter {self.storage.iter}] Non-finite loss={losses.item():.4f}, "
-                    f"skipping batch. loss_dict={  {k: v.item() for k, v in loss_dict.items()} }"
+                    f"[iter {self.storage.iter}] Non-finite loss={losses.item():.4f} "
+                    f"at accum step {step}/{self.accum_steps}, skipping entire iter. "
+                    f"loss_dict={ {k: v.item() for k, v in loss_dict.items()} }"
                 )
                 self.optimizer.zero_grad(set_to_none=True)
+                # Let scaler record the failed step so it reduces the scale.
+                if step > 0:
+                    self.grad_scaler.update()
                 data_time = time.perf_counter() - start
                 self.storage.put_scalars(data_time=data_time)
                 return
@@ -229,8 +237,15 @@ def train(
     grad_accum_steps: int,
     freeze_backbone: bool = False,
     log_gpu_mem_interval: int = 100,
+    run_eval: bool = True,
 ) -> None:
-    """Run full training with checkpointing, evaluation, and logging."""
+    """Run full training with checkpointing, evaluation, and logging.
+
+    Args:
+        run_eval: When False, skips both the periodic EvalHook and the final
+                  post-training evaluation.  Use this for large val sets that
+                  would OOM during training (run evaluation offline instead).
+    """
     logger.info("Starting training with grad_accum_steps=%d", grad_accum_steps)
 
     model = build_model(cfg)
@@ -272,34 +287,53 @@ def train(
     trainer           = GradAccumAMPTrainer(model, data_loader, optimizer, accum_steps=grad_accum_steps)
     trainer.clip_cfg  = cfg.SOLVER.CLIP_GRADIENTS
 
-    trainer.register_hooks(
-        [
-            hooks.IterationTimer(),
-            hooks.LRScheduler(scheduler=scheduler),
-            hooks.PeriodicCheckpointer(checkpointer, period=cfg.SOLVER.CHECKPOINT_PERIOD),
-            hooks.EvalHook(cfg.TEST.EVAL_PERIOD, lambda: evaluate(cfg, model)),
-            GPUMemoryHook(period=log_gpu_mem_interval),
-            hooks.PeriodicWriter(
-                [
-                    CommonMetricPrinter(cfg.SOLVER.MAX_ITER),
-                    JSONWriter(os.path.join(cfg.OUTPUT_DIR, "metrics.json")),
-                    TensorboardXWriter(cfg.OUTPUT_DIR),
-                ],
-                period=20,
-            ),
-        ]
-    )
+    active_hooks = [
+        hooks.IterationTimer(),
+        hooks.LRScheduler(scheduler=scheduler),
+        hooks.PeriodicCheckpointer(checkpointer, period=cfg.SOLVER.CHECKPOINT_PERIOD),
+    ]
+    # Only register EvalHook when evaluation is explicitly enabled.  Skipping
+    # this entirely (rather than just setting a huge EVAL_PERIOD) avoids any
+    # accidental eval trigger and eliminates the OOM risk on large val sets.
+    if run_eval and cfg.TEST.EVAL_PERIOD > 0:
+        active_hooks.append(
+            hooks.EvalHook(cfg.TEST.EVAL_PERIOD, lambda: evaluate(cfg, model))
+        )
+    else:
+        logger.info(
+            "EvalHook NOT registered (run_eval=%s, EVAL_PERIOD=%d). "
+            "Run evaluation offline after training.",
+            run_eval, cfg.TEST.EVAL_PERIOD,
+        )
+    active_hooks += [
+        GPUMemoryHook(period=log_gpu_mem_interval),
+        hooks.PeriodicWriter(
+            [
+                CommonMetricPrinter(cfg.SOLVER.MAX_ITER),
+                JSONWriter(os.path.join(cfg.OUTPUT_DIR, "metrics.json")),
+                TensorboardXWriter(cfg.OUTPUT_DIR),
+            ],
+            period=20,
+        ),
+    ]
+    trainer.register_hooks(active_hooks)
 
     with EventStorage(start_iter) as storage:
         trainer.storage = storage
         trainer.train(start_iter, cfg.SOLVER.MAX_ITER)
 
-    if comm.is_main_process():
+    if run_eval and comm.is_main_process():
         final_results = evaluate(cfg, model)
         for dataset_name, dataset_results in final_results.items():
             logger.info("Final evaluation summary for dataset=%s", dataset_name)
             if isinstance(dataset_results, dict):
                 print_csv_format(dataset_results)
+    elif not run_eval:
+        logger.info(
+            "Skipping final evaluation (--train-only). "
+            "Run: python training.py --eval-only --resume --output-dir %s",
+            cfg.OUTPUT_DIR,
+        )
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -324,6 +358,15 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-images", default=None, help="Path to val image directory")
     parser.add_argument("--classes-file", default=None, help="Path to class list file (1 class per line)")
     parser.add_argument("--freeze-backbone", action="store_true", help="Freeze backbone for fast warmup")
+    parser.add_argument(
+        "--train-only",
+        action="store_true",
+        help=(
+            "Disable ALL evaluation (periodic + final). "
+            "Use this for large val sets that would OOM during training. "
+            "Run evaluation offline with --eval-only after training."
+        ),
+    )
     parser.add_argument("--full-scan", action="store_true", help="Full annotation scan during preflight (slow)")
     parser.add_argument(
         "--log-gpu-mem-interval",
@@ -374,6 +417,11 @@ def main(args: argparse.Namespace) -> None:
     if args.opts:
         cfg.merge_from_list(args.opts)
 
+    if args.train_only:
+        # Remove val dataset so no code path can accidentally trigger eval.
+        cfg.DATASETS.TEST = ()
+        cfg.TEST.EVAL_PERIOD = 0
+
     cfg.freeze()
     default_setup(cfg, args)
     train(
@@ -382,6 +430,7 @@ def main(args: argparse.Namespace) -> None:
         grad_accum_steps=args.grad_accum_steps,
         freeze_backbone=args.freeze_backbone,
         log_gpu_mem_interval=args.log_gpu_mem_interval,
+        run_eval=not args.train_only,
     )
 
 
