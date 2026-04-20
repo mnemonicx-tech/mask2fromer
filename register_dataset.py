@@ -283,7 +283,7 @@ def _ram_aware_sample_size() -> int:
     return 10_000
 
 
-
+def get_json_classes(json_file: str) -> List[str]:
     """Load class names from COCO JSON ordered by category id (uses cache)."""
     coco = _load_coco_cached(json_file)
     cats = coco.loadCats(coco.getCatIds())
