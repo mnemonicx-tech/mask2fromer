@@ -28,7 +28,6 @@ import time
 # ═══════════════════════════════════════════════════════════════════════════
 CONFIG = {
     "output_dir":    "./output_97cls_100k",
-    "classes_file":  "/ephemeral/training_data/classes.txt",
     "train_json":    "/ephemeral/training_data/annotations/instances_train.json",
     "val_json":      "/ephemeral/training_data/annotations/instances_val.json",
     "train_images":  "/ephemeral/training_data/images/train",
@@ -57,7 +56,7 @@ def build_command() -> list:
         "--resume",
         "--train-only",          # skip all eval during training — run offline later
         "--output-dir",      CONFIG["output_dir"],
-        "--classes-file",    CONFIG["classes_file"],
+        # No --classes-file needed: hardcoded 97-class list in register_dataset.py matches exactly.
         "--train-json",      CONFIG["train_json"],
         "--val-json",        CONFIG["val_json"],
         "--train-images",    CONFIG["train_images"],
@@ -120,8 +119,43 @@ def cleanup_gpu():
         pass
 
 
+def preflight_check() -> None:
+    """Validate all required paths exist before entering the retry loop.
+
+    Unrecoverable config errors (missing files / directories) must abort
+    immediately with a clear message instead of burning through MAX_RETRIES
+    on fast crashes that will never self-heal.
+    """
+    required = {
+        "train_json":    ("file", CONFIG["train_json"]),
+        "val_json":      ("file", CONFIG["val_json"]),
+        "train_images":  ("dir",  CONFIG["train_images"]),
+        "val_images":    ("dir",  CONFIG["val_images"]),
+    }
+    errors = []
+    for key, (kind, path) in required.items():
+        if kind == "file" and not os.path.isfile(path):
+            errors.append(f"  ✗ [{key}] file not found: {path}")
+        elif kind == "dir" and not os.path.isdir(path):
+            errors.append(f"  ✗ [{key}] directory not found: {path}")
+
+    if errors:
+        print("\n🛑 Pre-flight check failed — fix these before starting training:\n")
+        for e in errors:
+            print(e)
+        print(
+            "\nEdit CONFIG at the top of run_training.py to point to the correct paths.\n"
+        )
+        sys.exit(1)
+
+    print("✅ Pre-flight check passed — all required paths exist.")
+
+
 def main():
     os.makedirs(CONFIG["output_dir"], exist_ok=True)
+
+    # Fail fast on missing files/dirs — don't waste retry budget on config errors.
+    preflight_check()
 
     # Set env for reduced fragmentation
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
