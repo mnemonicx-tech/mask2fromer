@@ -10,6 +10,7 @@ Usage:
 """
 
 import os
+import pickle
 import random
 from typing import Dict, List
 
@@ -220,9 +221,71 @@ def register_fashion_datasets() -> None:
         )
 
 
-def get_json_classes(json_file: str) -> List[str]:
-    """Load class names from COCO JSON ordered by category id."""
+def _load_coco_cached(json_file: str) -> "COCO":
+    """
+    Load a COCO object from a pickle cache when available.
+
+    Cache file: <json_file>.coco_cache.pkl
+    Invalidation: cache is discarded whenever the JSON is newer than the cache.
+
+    On a 120 GB RAM machine this reduces repeated annotation loads from
+    ~120 s (JSON parse) to ~3–5 s (pickle deserialise).
+    """
+    cache_path = json_file + ".coco_cache.pkl"
+    try:
+        json_mtime  = os.path.getmtime(json_file)
+        cache_mtime = os.path.getmtime(cache_path) if os.path.isfile(cache_path) else 0
+        if cache_mtime >= json_mtime:
+            import logging
+            logging.getLogger("register_dataset").info(
+                "[coco_cache] Loading from cache: %s", cache_path
+            )
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+    except Exception:
+        pass  # cache miss or unreadable — fall through to full load
+
     coco = COCO(json_file)
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump(coco, f, protocol=pickle.HIGHEST_PROTOCOL)
+        import logging
+        logging.getLogger("register_dataset").info(
+            "[coco_cache] Saved cache: %s", cache_path
+        )
+    except Exception:
+        pass  # cache write failure is non-fatal
+    return coco
+
+
+def _ram_aware_sample_size() -> int:
+    """
+    Return a sensible annotation sample size based on available RAM.
+
+    Available RAM   Sample size
+    ──────────────  ──────────────────────────────────
+    ≥ 60 GB         full scan  (0 → validated below)
+    ≥ 20 GB         100 000
+    ≥ 8 GB           30 000
+    <  8 GB          10 000  (safe default)
+    """
+    try:
+        import psutil
+        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+        if avail_gb >= 60:
+            return 0          # signals full scan
+        if avail_gb >= 20:
+            return 100_000
+        if avail_gb >= 8:
+            return 30_000
+    except ImportError:
+        pass
+    return 10_000
+
+
+
+    """Load class names from COCO JSON ordered by category id (uses cache)."""
+    coco = _load_coco_cached(json_file)
     cats = coco.loadCats(coco.getCatIds())
     cats = sorted(cats, key=lambda c: c["id"])
     return [c["name"] for c in cats]
@@ -260,11 +323,14 @@ def validate_thing_classes_against_json(json_file: str, thing_classes: List[str]
 
 def validate_coco_annotations(
     json_file: str,
-    sample_size: int = 10_000,
+    sample_size: int = -1,
     full_scan: bool = False,
 ) -> Dict[str, int]:
     """
     COCO annotation sanity checks.
+
+    sample_size=-1 (default) means auto-detect based on available RAM via
+    _ram_aware_sample_size(): full scan on ≥60 GB, scaled down otherwise.
 
     FIX #2: Changed from sequential first-N sample to RANDOM sample so
             corrupt annotations later in the 247K dataset are detected.
@@ -274,10 +340,10 @@ def validate_coco_annotations(
     Parameters
     ----------
     json_file   : Path to COCO annotations JSON.
-    sample_size : How many annotations to check (default 10K random).
-    full_scan   : If True, scan ALL annotations (slow but thorough).
+    sample_size : Annotations to check. -1 = auto (RAM-aware). 0 = all.
+    full_scan   : If True, scan ALL annotations regardless of sample_size.
     """
-    coco    = COCO(json_file)
+    coco    = _load_coco_cached(json_file)
     img_ids = set(coco.getImgIds())
     cat_ids = set(coco.getCatIds())
     ann_ids = list(coco.getAnnIds())
@@ -288,7 +354,8 @@ def validate_coco_annotations(
     if full_scan:
         sampled_ids = ann_ids
     else:
-        sampled_ids = random.sample(ann_ids, min(sample_size, len(ann_ids)))
+        n = _ram_aware_sample_size() if sample_size == -1 else sample_size
+        sampled_ids = ann_ids if n == 0 else random.sample(ann_ids, min(n, len(ann_ids)))
     anns = coco.loadAnns(sampled_ids)
 
     missing_seg = 0

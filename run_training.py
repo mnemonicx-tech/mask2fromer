@@ -148,7 +148,25 @@ def preflight_check() -> None:
         )
         sys.exit(1)
 
-    print("✅ Pre-flight check passed — all required paths exist.")
+    # CUDA availability — must fail here, not inside the retry loop.
+    # If no GPU is visible the subprocess will crash after ~350s of model
+    # loading, bypass the fast-crash counter, and retry indefinitely.
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            print("\n🛑 Pre-flight check failed — no CUDA GPU is visible.\n")
+            print("  Diagnosis steps:")
+            print("    1. nvidia-smi                        # verify driver sees the GPU")
+            print("    2. echo $CUDA_VISIBLE_DEVICES         # must NOT be empty string or -1")
+            print("    3. python3 -c 'import torch; print(torch.cuda.device_count())'")
+            print("    4. If using a venv: deactivate && source .venv/bin/activate && nvidia-smi")
+            print("    5. If in a container: check --gpus flag or device passthrough\n")
+            sys.exit(1)
+        gpu_count = torch.cuda.device_count()
+        gpu_name  = torch.cuda.get_device_name(0)
+        print(f"✅ Pre-flight check passed — {gpu_count} GPU(s) visible: {gpu_name}")
+    except ImportError:
+        print("⚠️  torch not importable from launcher — skipping CUDA check.")
 
 
 def main():
