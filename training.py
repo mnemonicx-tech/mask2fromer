@@ -33,6 +33,11 @@ _np.bool = bool  # safe: bool is what np.bool always was
 # TF32 gives ~2× throughput on matmuls with negligible precision loss.
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+# high = use TF32 for float32 matmuls (PyTorch ≥ 1.12, A100+)
+try:
+    torch.set_float32_matmul_precision("high")
+except AttributeError:
+    pass  # PyTorch < 1.12 — TF32 flags above already cover this
 # Auto-tune convolution algorithms for best perf on this GPU
 torch.backends.cudnn.benchmark = True
 
@@ -100,6 +105,8 @@ class FashionTrainer(DefaultTrainer):
             cfg,
             mapper=mapper,
             num_workers=cfg.DATALOADER.NUM_WORKERS,
+            pin_memory=True,
+            persistent_workers=cfg.DATALOADER.NUM_WORKERS > 0,
         )
 
     @classmethod

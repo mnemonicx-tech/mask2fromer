@@ -32,10 +32,10 @@ CONFIG = {
     "val_json":      "/ephemeral/training_data/annotations/instances_val.json",
     "train_images":  "/ephemeral/training_data/images/train",
     "val_images":    "/ephemeral/training_data/images/val",
-    "ims_per_batch": 8,
+    "ims_per_batch": 16,
     "num_workers":   16,
-    "grad_accum":    2,
-    "max_iter":      100_000,
+    "grad_accum":    1,   # no accumulation needed: IMS_PER_BATCH=16 is the full effective batch
+    "max_iter":      60_000,
     "eval_period":   999_999,       # skip eval during training (run offline later)
     "checkpoint_period": 10_000,
     "base_lr":       "1e-4",
