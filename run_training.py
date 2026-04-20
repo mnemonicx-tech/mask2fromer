@@ -37,7 +37,7 @@ CONFIG = {
     "num_workers":   16,
     "grad_accum":    2,
     "max_iter":      100_000,
-    "eval_period":   50_000,
+    "eval_period":   999_999,       # skip eval during training (run offline later)
     "checkpoint_period": 10_000,
     "base_lr":       "1e-4",
 }

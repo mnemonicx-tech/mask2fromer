@@ -136,17 +136,11 @@ def build_cfg(
     cfg.SOLVER.WARMUP_ITERS      = 1000
     cfg.SOLVER.WARMUP_METHOD     = "linear"
 
-    # -----------------------------------------------------------------------
-    # Gradient clipping
-    # FIX #4: CLIP_VALUE was 0.01 — far too aggressive, clipping almost every
-    #          gradient update and causing instability with AMP.
-    #          Official Mask2Former default is 0.01 for NORM type but 1.0
-    #          is the correct value for "full_model" clip type.
-    # -----------------------------------------------------------------------
-    cfg.SOLVER.CLIP_GRADIENTS.ENABLED    = True
-    cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE  = "full_model"
-    cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 1.0    # FIX: was 0.01 → too aggressive
-    cfg.SOLVER.CLIP_GRADIENTS.NORM_TYPE  = 2.0
+    # Clip gradients to prevent spikes on fashion's long-tail distribution
+    cfg.SOLVER.CLIP_GRADIENTS.ENABLED       = True
+    cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE     = "full_model"
+    cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE    = 1.0     # official Mask2Former default; 0.01 was too aggressive
+    cfg.SOLVER.CLIP_GRADIENTS.NORM_TYPE     = 2.0
 
     # -----------------------------------------------------------------------
     # Mixed precision (AMP / FP16)
