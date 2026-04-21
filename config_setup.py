@@ -89,6 +89,11 @@ def build_cfg(
     cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO = 3.0
     cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO = 0.75
     cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT = 0.05
+    
+    # Decoder Depth & Edge-focused Loss Balancing
+    cfg.MODEL.MASK_FORMER.DEC_LAYERS = 12
+    cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 4.0
+    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 6.0
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
@@ -125,7 +130,7 @@ def build_cfg(
     # A100-80GB comfortably fits 16 images/iter at 1024×1024 LSJ crops with AMP.
     # Effective batch = 16, matching the official Mask2Former LR (1e-4).
     # No gradient accumulation needed — removes accum overhead for ~15% speed gain.
-    cfg.SOLVER.IMS_PER_BATCH           = 16
+    cfg.SOLVER.IMS_PER_BATCH           = 12
 
     _EFFECTIVE_ITERS = 100_000
     cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS
@@ -169,7 +174,7 @@ def build_cfg(
     # 28 CPUs / 120 GB RAM: 16 workers saturate the GPU without thrashing.
     # pin_memory: reduces CPU↔GPU transfer latency.
     # persistent_workers: avoids worker restart overhead between iterations.
-    cfg.DATALOADER.NUM_WORKERS           = 16
+    cfg.DATALOADER.NUM_WORKERS           = 24
     cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
 
     # -----------------------------------------------------------------------
