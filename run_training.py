@@ -175,9 +175,6 @@ def main():
     # Fail fast on missing files/dirs — don't waste retry budget on config errors.
     preflight_check()
 
-    # Set env for reduced fragmentation
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
     consecutive_fast_crashes = 0  # crashes < 60s likely mean a code bug, not transient
 
     for attempt in range(1, MAX_RETRIES + 1):
