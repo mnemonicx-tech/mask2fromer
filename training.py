@@ -3,7 +3,9 @@
 import argparse
 import logging
 import os
+import queue
 import sys
+import threading
 import time
 from typing import Dict, List, Optional
 
@@ -69,6 +71,40 @@ from register_dataset import get_thing_classes, register_fashion_datasets, run_p
 logger = logging.getLogger("mask2former.train")
 
 
+class _PrefetchLoader:
+    """Wrap any iterable data loader and prefetch batches in a background thread.
+
+    Decouples CPU augmentation from GPU compute so data_time approaches zero.
+    buffer_size=4 keeps 4 pre-augmented batches ready in CPU memory at all times.
+    """
+
+    def __init__(self, loader, buffer_size: int = 4):
+        self.loader = loader
+        self.buffer_size = buffer_size
+
+    def __iter__(self):
+        q = queue.Queue(maxsize=self.buffer_size)
+        _sentinel = object()
+
+        def _producer():
+            try:
+                for batch in self.loader:
+                    q.put(batch)
+            finally:
+                q.put(_sentinel)
+
+        t = threading.Thread(target=_producer, daemon=True)
+        t.start()
+        while True:
+            item = q.get()
+            if item is _sentinel:
+                break
+            yield item
+
+    def __len__(self):
+        return len(self.loader)
+
+
 class FashionTrainer(DefaultTrainer):
     """Trainer helpers for evaluator, data loader, and optimizer setup."""
 
@@ -101,13 +137,12 @@ class FashionTrainer(DefaultTrainer):
         )
 
         mapper = COCOInstanceNewBaselineDatasetMapper(cfg, is_train=True)
-        return build_detection_train_loader(
+        loader = build_detection_train_loader(
             cfg,
             mapper=mapper,
             num_workers=cfg.DATALOADER.NUM_WORKERS,
-            pin_memory=True,
-            persistent_workers=cfg.DATALOADER.NUM_WORKERS > 0,
         )
+        return _PrefetchLoader(loader, buffer_size=4)
 
     @classmethod
     def build_optimizer(cls, cfg: CfgNode, model: torch.nn.Module):
