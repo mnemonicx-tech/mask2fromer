@@ -182,7 +182,7 @@ class GradAccumAMPTrainer(AMPTrainer):
         for step in range(self.accum_steps):
             data = next(self._data_loader_iter)
             try:
-                with torch.cuda.amp.autocast(enabled=True):
+                with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
                     loss_dict = self.model(data)
                     losses = sum(loss_dict.values()) / self.accum_steps
             except (ValueError, RuntimeError) as e:
