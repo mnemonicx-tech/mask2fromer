@@ -152,7 +152,9 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Checkpointing & evaluation
     # -----------------------------------------------------------------------
-    cfg.SOLVER.CHECKPOINT_PERIOD = 5_000
+    # Checkpoint every 2500 iters (~53 min at 1.27s/iter).  Limits data loss
+    # from NaN weight corruption to at most ~53 min of training.
+    cfg.SOLVER.CHECKPOINT_PERIOD = 2_500
     cfg.TEST.EVAL_PERIOD          = 5_000
 
     # -----------------------------------------------------------------------

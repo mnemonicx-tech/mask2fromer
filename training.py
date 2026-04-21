@@ -222,6 +222,31 @@ class GradAccumAMPTrainer(AMPTrainer):
         # --------------------------------------------------------------------
         if self.clip_cfg is not None and self.clip_cfg.ENABLED:
             self.grad_scaler.unscale_(self.optimizer)
+
+            # Check for NaN/Inf gradients BEFORE clipping.  clip_grad_norm_
+            # computes total_norm across all params — if any grad is NaN, the
+            # total_norm becomes NaN and clipping sets ALL grads to NaN,
+            # corrupting every weight on the subsequent optimizer.step().
+            _has_bad_grad = False
+            for p in self.model.parameters():
+                if p.grad is not None and not torch.isfinite(p.grad).all():
+                    _has_bad_grad = True
+                    break
+
+            if _has_bad_grad:
+                logger.warning(
+                    f"[iter {self.storage.iter}] NaN/Inf in gradients after "
+                    f"unscale — skipping optimizer step and reducing loss scale."
+                )
+                self.optimizer.zero_grad(set_to_none=True)
+                self.grad_scaler.update()  # lets scaler reduce its scale factor
+                data_time = time.perf_counter() - start
+                total_loss = sum(loss_dict_accum.values()) if loss_dict_accum else float("nan")
+                self.storage.put_scalars(
+                    total_loss=total_loss, data_time=data_time, **loss_dict_accum
+                )
+                return
+
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.clip_cfg.CLIP_VALUE
             )
@@ -478,11 +503,15 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     args = get_parser().parse_args()
-    launch(
-        main,
-        num_gpus_per_machine=args.num_gpus,
-        num_machines=args.num_machines,
-        machine_rank=args.machine_rank,
-        dist_url=args.dist_url,
-        args=(args,),
-    )
+    if args.num_gpus == 1 and args.num_machines == 1:
+        # Explicit single-process fast path for one-GPU training.
+        main(args)
+    else:
+        launch(
+            main,
+            num_gpus_per_machine=args.num_gpus,
+            num_machines=args.num_machines,
+            machine_rank=args.machine_rank,
+            dist_url=args.dist_url,
+            args=(args,),
+        )
