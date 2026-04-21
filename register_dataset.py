@@ -187,6 +187,10 @@ def get_datasets() -> Dict[str, Dict[str, str]]:
     return {
         "fashion_train": {"json": train_json, "images": train_images},
         "fashion_val":   {"json": val_json,   "images": val_images},
+        "fashion_val_mini": {
+            "json": os.path.join(data_root, "annotations", "instances_val_mini.json"),
+            "images": val_images  # It uses the exact same validation images folder
+        },
     }
 
 
