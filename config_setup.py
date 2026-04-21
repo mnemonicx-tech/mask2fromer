@@ -142,9 +142,10 @@ def build_cfg(
     cfg.SOLVER.OPTIMIZER             = "ADAMW"
     cfg.SOLVER.BACKBONE_MULTIPLIER   = 0.1   # lower LR for pretrained backbone
 
-    # Cosine decay with linear warmup
-    # 5000 warmup iters ≈ 2% of 267K-image run; avoids cold-start LR spikes.
-    cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupCosineLR"
+    # Multi-step LR for rigid phase stabilization
+    cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupMultiStepLR"
+    cfg.SOLVER.STEPS             = (20_000, 40_000)
+    cfg.SOLVER.GAMMA             = 0.1
     cfg.SOLVER.WARMUP_FACTOR     = 1.0 / 1000
     cfg.SOLVER.WARMUP_ITERS      = 1_000
     cfg.SOLVER.WARMUP_METHOD     = "linear"

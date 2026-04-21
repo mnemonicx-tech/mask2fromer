@@ -32,7 +32,7 @@ CONFIG = {
     "val_json":      "/ephemeral/training_data/annotations/instances_val.json",
     "train_images":  "/ephemeral/training_data/images/train",
     "val_images":    "/ephemeral/training_data/images/val",
-    "ims_per_batch": 10,
+    "ims_per_batch": 12,
     "num_workers":   24,
     "grad_accum":    1,   # no accumulation needed: IMS_PER_BATCH=10 is the full effective batch
     "max_iter":      60_000,
