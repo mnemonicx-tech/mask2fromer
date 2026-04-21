@@ -83,6 +83,12 @@ def build_cfg(
     cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = num_classes
     # 97 classes → 200 queries gives headroom for dense multi-garment scenes
     cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES = 200
+    
+    # Advanced Point Sampling for Edge Fidelity
+    cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS = 20000
+    cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO = 3.0
+    cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO = 0.75
+    cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT = 0.05
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
@@ -102,8 +108,8 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # LSJ (Large Scale Jittering) augmentation — used by COCOInstanceNewBaselineDatasetMapper
     cfg.INPUT.IMAGE_SIZE           = 1024
-    cfg.INPUT.MIN_SCALE            = 0.1
-    cfg.INPUT.MAX_SCALE            = 2.0
+    cfg.INPUT.MIN_SCALE            = 0.5
+    cfg.INPUT.MAX_SCALE            = 1.5
     cfg.INPUT.DATASET_MAPPER_NAME  = "coco_instance_lsj"
     # Legacy ResizeShortestEdge keys (used by test-time inference)
     cfg.INPUT.MIN_SIZE_TRAIN       = (640, 672, 704, 736, 768, 800)
@@ -125,7 +131,7 @@ def build_cfg(
     cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS
 
     # Official Mask2Former LR for bs16
-    cfg.SOLVER.BASE_LR                 = 1e-4
+    cfg.SOLVER.BASE_LR                 = 5e-5
     cfg.SOLVER.WEIGHT_DECAY            = 0.05
 
     cfg.SOLVER.OPTIMIZER             = "ADAMW"
@@ -135,7 +141,7 @@ def build_cfg(
     # 5000 warmup iters ≈ 2% of 267K-image run; avoids cold-start LR spikes.
     cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupCosineLR"
     cfg.SOLVER.WARMUP_FACTOR     = 1.0 / 1000
-    cfg.SOLVER.WARMUP_ITERS      = 5_000
+    cfg.SOLVER.WARMUP_ITERS      = 1_000
     cfg.SOLVER.WARMUP_METHOD     = "linear"
 
     # Clip gradients to prevent spikes on fashion's long-tail distribution
