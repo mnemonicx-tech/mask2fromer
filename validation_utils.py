@@ -247,9 +247,11 @@ class ValidationHook(HookBase):
                 pred_instances = output["instances"]
                 gt_instances = img_data["instances"]
                 
-                # Extract scores to CPU for boolean mask — avoids cross-device Instances indexing crash
+                # Training-time threshold: Mask2Former scores stay below 0.3 until ~40k+ iters.
+                # Using 0.5 here would zero out ALL metrics during mid-training monitoring.
+                # Final evaluation should use 0.5+, but for trend tracking 0.1 captures real signal.
                 all_scores = pred_instances.scores.detach().cpu()
-                keep = all_scores > 0.5
+                keep = all_scores > 0.1
                 
                 if keep.sum() == 0:
                     metrics["fp_rate"] += 1.0  # Massive penalty
