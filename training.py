@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+from validation_utils import ValidationHook
 from typing import Dict, List, Optional
 
 # ── NumPy/Torch compatibility guard ──────────────────────────────────────────
@@ -373,6 +374,7 @@ def train(
             run_eval, cfg.TEST.EVAL_PERIOD,
         )
     active_hooks += [
+        ValidationHook(cfg, cfg.DATASETS.TEST[0], period=2000, num_images=50),
         GPUMemoryHook(period=log_gpu_mem_interval),
         hooks.PeriodicWriter(
             [
