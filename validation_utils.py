@@ -1,3 +1,5 @@
+import os
+import json
 import torch
 import torch.nn.functional as F
 from detectron2.engine.hooks import HookBase
@@ -30,20 +32,24 @@ class ValidationDatasetMapper:
         image = utils.read_image(dataset_dict["file_name"], format=self.image_format)
         utils.check_image_size(dataset_dict, image)
         
+        orig_shape = (dataset_dict.get("height", image.shape[0]), dataset_dict.get("width", image.shape[1]))
+        
         aug_input = T.AugInput(image)
         transforms = self.augmentations(aug_input)
         image = aug_input.image
-        image_shape = image.shape[:2]
         
         dataset_dict["image"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
 
         if "annotations" in dataset_dict:
+            # Bypassing the Inference resize transforms to enforce Ground Truth processing at
+            # the PERFECT Native Resolution! (Mask2Former auto-upscales Predictions to Native as well)
+            no_op = T.TransformList([])
             annos = [
-                utils.transform_instance_annotations(obj, transforms, image_shape)
+                utils.transform_instance_annotations(obj, no_op, orig_shape)
                 for obj in dataset_dict.pop("annotations")
                 if obj.get("iscrowd", 0) == 0
             ]
-            instances = utils.annotations_to_instances(annos, image_shape, mask_format="bitmask")
+            instances = utils.annotations_to_instances(annos, orig_shape, mask_format="bitmask")
             dataset_dict["instances"] = instances
             
         return dataset_dict
@@ -122,7 +128,7 @@ class ValidationHook(HookBase):
         if self.val_loader is None:
             subset_name = f"{self.dataset_name}_eval_subset_200"
             subset_cache_path = os.path.join(self.cfg.OUTPUT_DIR, f"{subset_name}.json")
-            import json, os
+
             
             if os.path.exists(subset_cache_path):
                 logger.info(f"Loading fast subset cache directly from {subset_cache_path} (Bypassing 11GB RAM Drop)")
