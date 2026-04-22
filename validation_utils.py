@@ -114,9 +114,20 @@ class ValidationHook(HookBase):
             # This directly prevents metric oscillation on TensorBoard graphs
             rng.shuffle(subset_data)
             
+            subset_name = f"{self.dataset_name}_eval_subset_200"
+            if subset_name in DatasetCatalog.list():
+                DatasetCatalog.remove(subset_name)
+                
+            frozen_subset = list(subset_data)
+            DatasetCatalog.register(subset_name, lambda d=frozen_subset: d)
+            
+            # Copy metadata so the evaluator mapping perfectly mimics the origin dataset metrics
+            from detectron2.data import MetadataCatalog
+            MetadataCatalog.get(subset_name).set(**MetadataCatalog.get(self.dataset_name).as_dict())
+            
             self.val_loader = build_detection_test_loader(
                 self.cfg, 
-                subset_data,
+                subset_name,
                 mapper=DatasetMapper(self.cfg, is_train=False)
             )
             self._val_iter = iter(self.val_loader)
@@ -304,6 +315,9 @@ class ValidationHook(HookBase):
             if small_obj_img_count > 0:
                 storage.put_scalar(f"val/small_obj_bound_iou", metrics["small_obj_bound_iou"] / small_obj_img_count)
                 storage.put_scalar(f"val/small_obj_bfscore", metrics["small_obj_bfscore"] / small_obj_img_count)
+            
+            # Write explicitly to console log so it skips Tensorboard parsing for fast debugging
+            logger.info(f"[VAL] Strict BFScore: {metrics['bfscore'] / valid_images:.4f} | Strict Bound IoU: {metrics['bound_iou_strict'] / valid_images:.4f}")
             
             if images_to_log:
                 grid = torch.cat(images_to_log, dim=2)
