@@ -1,0 +1,61 @@
+PROPRIETARY SOFTWARE LICENSE
+
+Copyright (c) 2026 MnemonicX Tech. All Rights Reserved.
+
+NOTICE: This software and all associated documentation, source code, compiled
+binaries, configuration files, training scripts, model weights, and any
+derivative works (collectively, "Software") are the exclusive proprietary
+property of MnemonicX Tech ("Company").
+
+RESTRICTIONS
+
+1. NO REDISTRIBUTION — You may not copy, distribute, sublicense, sell, lease,
+   or otherwise transfer this Software, in whole or in part, to any third
+   party without prior written authorization from the Company.
+
+2. NO MODIFICATION — You may not modify, adapt, translate, reverse engineer,
+   decompile, or disassemble this Software without prior written authorization
+   from the Company.
+
+3. NO DERIVATIVE WORKS — You may not create derivative works based on this
+   Software without prior written authorization from the Company.
+
+4. CONFIDENTIALITY — This Software contains trade secrets and confidential
+   information of the Company. You agree to maintain the confidentiality of
+   this Software and to not disclose any part of it to unauthorized parties.
+
+5. AUTHORIZED USE ONLY — Access to and use of this Software is restricted to
+   employees, contractors, and authorized agents of MnemonicX Tech who have
+   a legitimate business need and have agreed to be bound by the terms of
+   this license.
+
+6. MODEL WEIGHTS & TRAINING DATA — Any model weights, checkpoints, training
+   data, evaluation data, or inference outputs produced using this Software
+   are also considered proprietary property of MnemonicX Tech.
+
+THIRD-PARTY COMPONENTS
+
+This Software incorporates or depends on the following open-source components,
+each subject to their own respective licenses:
+
+  - Detectron2 (Apache 2.0) — https://github.com/facebookresearch/detectron2
+  - Mask2Former (MIT) — https://github.com/facebookresearch/Mask2Former
+  - PyTorch (BSD-3) — https://github.com/pytorch/pytorch
+  - Swin Transformer (MIT) — https://github.com/microsoft/Swin-Transformer
+
+Use of these third-party components does not grant any rights to the
+proprietary portions of this Software.
+
+DISCLAIMER
+
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL MNEMONICX TECH BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
+
+TERMINATION
+
+This license is effective until terminated. The Company may terminate this
+license at any time. Upon termination, you must destroy all copies of this
+Software in your possession.
+
+For licensing inquiries, contact: legal@mnemonicx.com

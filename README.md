@@ -201,4 +201,17 @@ python smoke_test_validation.py
 
 ## License
 
-This project uses [Mask2Former](https://github.com/facebookresearch/Mask2Former) (MIT License) and [Detectron2](https://github.com/facebookresearch/detectron2) (Apache 2.0 License).
+**Proprietary** — © 2026 MnemonicX Tech. All Rights Reserved.
+
+This software is confidential and proprietary. Unauthorized copying, distribution, or use is strictly prohibited. See [LICENSE](./LICENSE) for full terms.
+
+### Third-Party Acknowledgements
+
+This project depends on the following open-source components:
+
+| Component | License |
+|---|---|
+| [Detectron2](https://github.com/facebookresearch/detectron2) | Apache 2.0 |
+| [Mask2Former](https://github.com/facebookresearch/Mask2Former) | MIT |
+| [PyTorch](https://github.com/pytorch/pytorch) | BSD-3 |
+| [Swin Transformer](https://github.com/microsoft/Swin-Transformer) | MIT |
