@@ -120,42 +120,54 @@ class ValidationHook(HookBase):
 
     def _init_loader(self):
         if self.val_loader is None:
-            full_dataset = DatasetCatalog.get(self.dataset_name)
-            
-            # Stratified Sampling to enforce rigorous metric balance
-            small_objs, occlusions, normal = [], [], []
-            for d in full_dataset:
-                anns = d.get("annotations", [])
-                
-                # Default to 1024 if somehow missing to prevent crash
-                img_area = d.get("height", 1024) * d.get("width", 1024)
-                # Ensure we catch small objects accurately
-                has_small = any(a.get("area", 0) < 0.05 * img_area for a in anns)
-                has_overlap = len(anns) > 3
-                
-                if has_small:
-                    small_objs.append(d)
-                elif has_overlap:
-                    occlusions.append(d)
-                else:
-                    normal.append(d)
-                    
-            rng = random.Random(42)
-            
-            # Sub-sample safely incase of extreme set imbalance
-            n_small = min(50, len(small_objs))
-            n_occ = min(50, len(occlusions))
-            n_normal = min(200 - (n_small + n_occ), len(normal))
-            
-            subset_data = rng.sample(small_objs, n_small) + \
-                          rng.sample(occlusions, n_occ) + \
-                          rng.sample(normal, n_normal)
-                          
-            # CRITICAL: Shuffle the combined 200 subset ONCE so rolling chunks aren't statically biased
-            # This directly prevents metric oscillation on TensorBoard graphs
-            rng.shuffle(subset_data)
-            
             subset_name = f"{self.dataset_name}_eval_subset_200"
+            subset_cache_path = os.path.join(self.cfg.OUTPUT_DIR, f"{subset_name}.json")
+            import json, os
+            
+            if os.path.exists(subset_cache_path):
+                logger.info(f"Loading fast subset cache directly from {subset_cache_path} (Bypassing 11GB RAM Drop)")
+                with open(subset_cache_path, "r") as f:
+                    subset_data = json.load(f)
+            else:
+                full_dataset = DatasetCatalog.get(self.dataset_name)
+                
+                # Stratified Sampling to enforce rigorous metric balance
+                small_objs, occlusions, normal = [], [], []
+                for d in full_dataset:
+                    anns = d.get("annotations", [])
+                    
+                    # Default to 1024 if somehow missing to prevent crash
+                    img_area = d.get("height", 1024) * d.get("width", 1024)
+                    # Ensure we catch small objects accurately
+                    has_small = any(a.get("area", 0) < 0.05 * img_area for a in anns)
+                    has_overlap = len(anns) > 3
+                    
+                    if has_small:
+                        small_objs.append(d)
+                    elif has_overlap:
+                        occlusions.append(d)
+                    else:
+                        normal.append(d)
+                        
+                rng = random.Random(42)
+                
+                # Sub-sample safely incase of extreme set imbalance
+                n_small = min(50, len(small_objs))
+                n_occ = min(50, len(occlusions))
+                n_normal = min(200 - (n_small + n_occ), len(normal))
+                
+                subset_data = rng.sample(small_objs, n_small) + \
+                              rng.sample(occlusions, n_occ) + \
+                              rng.sample(normal, n_normal)
+                              
+                # CRITICAL: Shuffle the combined 200 subset ONCE so rolling chunks aren't statically biased
+                # This directly prevents metric oscillation on TensorBoard graphs
+                rng.shuffle(subset_data)
+                
+                # Save out to physical cache so future reboots don't parse 60k JSON string arrays
+                with open(subset_cache_path, "w") as f:
+                    json.dump(subset_data, f)
+            
             if subset_name in DatasetCatalog.list():
                 DatasetCatalog.remove(subset_name)
                 
@@ -215,31 +227,46 @@ class ValidationHook(HookBase):
         valid_images = 0
         small_obj_img_count = 0
         
-        with torch.no_grad():
+        # Micro-optimization natively drops strict Variable overheads
+        with torch.inference_mode():
             for _ in range(self.num_images):
-                batch = self._get_next_batch(current_iter)
-                try:
-                    outputs = self.trainer.model(batch)
-                except Exception as e:
-                    logger.warning(f"Validation inference failed: {e}")
-                    continue
-                
-                img_data = batch[0]
+                img_data = self._get_next_batch(current_iter)[0]
+                outputs = self.trainer.model([img_data])
                 output = outputs[0]
                 
                 if "instances" not in output or "instances" not in img_data:
                     del outputs
                     continue
                     
-                # Force tensors to CUDA strictly. Detectron2 evaluation layers natively move outputs to CPU to save 
-                # VRAM, which causes indexing failures and crashes parallel multi-tensor multiplication ops.
-                pred_instances = output["instances"].to("cuda")
-                gt_instances = img_data["instances"].to("cuda")
+                pred_instances = output["instances"]
+                gt_instances = img_data["instances"]
                 
                 valid_preds = pred_instances[pred_instances.scores > 0.5]
                 
-                pred_masks = valid_preds.pred_masks.to(torch.float32) # [P, H, W]
-                gt_masks = gt_instances.gt_masks.tensor.to(pred_masks.device).to(torch.float32) # [G, H, W]
+                if len(valid_preds) == 0:
+                    metrics["fp_rate"] += 1.0
+                    valid_images += 1
+                    del outputs
+                    continue
+                    
+                pred_masks = valid_preds.pred_masks
+                if not pred_masks.is_cuda:
+                    pred_masks = pred_masks.to("cuda", non_blocking=True)
+                    
+                scores = valid_preds.scores
+                if not scores.is_cuda:
+                    scores = scores.to("cuda", non_blocking=True)
+                    
+                gt_masks_raw = gt_instances.gt_masks.tensor
+                if not gt_masks_raw.is_cuda:
+                    gt_masks_raw = gt_masks_raw.to("cuda", non_blocking=True)
+                
+                pred_masks = pred_masks.to(torch.float32)
+                gt_masks = gt_masks_raw.to(torch.float32)
+
+                assert pred_masks.shape[-2:] == gt_masks.shape[-2:], f"Resolution drift! Pred: {pred_masks.shape} vs GT: {gt_masks.shape}"
+                assert pred_masks.dim() == 3, f"Prediction Mask invalid dimensional rank: {pred_masks.dim()}"
+                assert gt_masks.dim() == 3, f"GT Mask invalid dimensional rank: {gt_masks.dim()}"
                 
                 H, W = pred_masks.shape[-2:]
                 if H == 0 or W == 0:
