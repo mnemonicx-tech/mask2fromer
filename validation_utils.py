@@ -128,10 +128,24 @@ class ValidationHook(HookBase):
                 del origin_meta["name"]
             MetadataCatalog.get(subset_name).set(**origin_meta)
             
+            # Standard is_train=False explicitly strips annotations out of the mapping dict natively!
+            # We must instantiate as is_train=True to force annotations_to_instances translation, 
+            # but instantly strip Train-time Augmentations (Crops, LSJ, etc.) to evaluate accurately!
+            from detectron2.data import DatasetMapper, transforms as T
+            custom_mapper = DatasetMapper(self.cfg, is_train=True)
+            custom_mapper.augmentations = T.AugmentationList([
+                T.ResizeShortestEdge(
+                    [self.cfg.INPUT.MIN_SIZE_TEST, self.cfg.INPUT.MIN_SIZE_TEST], 
+                    self.cfg.INPUT.MAX_SIZE_TEST
+                )
+            ])
+            if hasattr(custom_mapper, "crop_gen"):
+                custom_mapper.crop_gen = None
+            
             self.val_loader = build_detection_test_loader(
                 self.cfg, 
                 subset_name,
-                mapper=DatasetMapper(self.cfg, is_train=False)
+                mapper=custom_mapper
             )
             self._val_iter = iter(self.val_loader)
 
