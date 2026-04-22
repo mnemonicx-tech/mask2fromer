@@ -368,16 +368,20 @@ class ValidationHook(HookBase):
                     vis_img = img_data["image"].clone().cpu().float()
                     c_min, c_max = vis_img.min(), vis_img.max()
                     if c_max > c_min: vis_img = (vis_img - c_min) / (c_max - c_min)
-                        
-                    pb = pb_strict.cpu()
-                    gb = gb_strict.cpu()
                     
-                    error_map = (pred_fg_mask.cpu() != gt_fg_mask.cpu()).float()
+                    vis_h, vis_w = vis_img.shape[1], vis_img.shape[2]
+                    
+                    # Resize masks from native resolution to inference image size for overlay
+                    pb = F.interpolate(pb_strict.float().unsqueeze(0).unsqueeze(0), size=(vis_h, vis_w), mode="nearest").squeeze().cpu() > 0
+                    gb = F.interpolate(gb_strict.float().unsqueeze(0).unsqueeze(0), size=(vis_h, vis_w), mode="nearest").squeeze().cpu() > 0
+                    error_map = F.interpolate(
+                        (pred_fg_mask != gt_fg_mask).float().unsqueeze(0).unsqueeze(0), size=(vis_h, vis_w), mode="nearest"
+                    ).squeeze().cpu()
+                    
                     vis_img[2] = torch.max(vis_img[2], error_map * 0.6)
-                    
-                    vis_img[1][gb > 0] = 1.0 # Pure GT boundaries Green
-                    vis_img[0][pb > 0] = 1.0 # Pure Pred boundaries Red
-                    vis_img[2][(pb > 0) | (gb > 0)] = 0.0 # Suppress blue
+                    vis_img[1][gb > 0] = 1.0
+                    vis_img[0][pb > 0] = 1.0
+                    vis_img[2][(pb > 0) | (gb > 0)] = 0.0
 
                     images_to_log.append(vis_img)
                     
