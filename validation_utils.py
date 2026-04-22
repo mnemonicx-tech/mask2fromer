@@ -247,21 +247,19 @@ class ValidationHook(HookBase):
                 pred_instances = output["instances"]
                 gt_instances = img_data["instances"]
                 
-                valid_preds = pred_instances[pred_instances.scores > 0.5]
+                # Extract scores to CPU for boolean mask — avoids cross-device Instances indexing crash
+                all_scores = pred_instances.scores.detach().cpu()
+                keep = all_scores > 0.5
                 
-                if len(valid_preds) == 0:
-                    metrics["fp_rate"] += 1.0
+                if keep.sum() == 0:
+                    metrics["fp_rate"] += 1.0  # Massive penalty
                     valid_images += 1
                     del outputs
                     continue
-                    
-                pred_masks = valid_preds.pred_masks
-                if not pred_masks.is_cuda:
-                    pred_masks = pred_masks.to("cuda", non_blocking=True)
-                    
-                scores = valid_preds.scores
-                if not scores.is_cuda:
-                    scores = scores.to("cuda", non_blocking=True)
+                
+                # Pull only the tensors we actually need, skip boxes entirely
+                pred_masks = pred_instances.pred_masks[keep].to("cuda", non_blocking=True)
+                scores = all_scores[keep].to("cuda", non_blocking=True)
                     
                 gt_masks_raw = gt_instances.gt_masks.tensor
                 if not gt_masks_raw.is_cuda:
