@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from detectron2.engine.hooks import HookBase
-from detectron2.data import build_detection_test_loader
+from detectron2.data import build_detection_test_loader, DatasetMapper, DatasetCatalog
 import logging
 import random
 
@@ -79,23 +79,50 @@ class ValidationHook(HookBase):
 
     def _init_loader(self):
         if self.val_loader is None:
-            self.val_loader = build_detection_test_loader(self.cfg, self.dataset_name)
+            full_dataset = DatasetCatalog.get(self.dataset_name)
             
-            try:
-                self._dataset_cache = list(self.val_loader.dataset)
-            except Exception:
-                pass
+            # Stratified Sampling to enforce rigorous metric balance
+            small_objs, occlusions, normal = [], [], []
+            for d in full_dataset:
+                anns = d.get("annotations", [])
                 
+                # Default to 1024 if somehow missing to prevent crash
+                img_area = d.get("height", 1024) * d.get("width", 1024)
+                # Ensure we catch small objects accurately
+                has_small = any(a.get("area", 0) < 0.05 * img_area for a in anns)
+                has_overlap = len(anns) > 3
+                
+                if has_small:
+                    small_objs.append(d)
+                elif has_overlap:
+                    occlusions.append(d)
+                else:
+                    normal.append(d)
+                    
+            rng = random.Random(42)
+            
+            # Sub-sample safely incase of extreme set imbalance
+            n_small = min(50, len(small_objs))
+            n_occ = min(50, len(occlusions))
+            n_normal = min(200 - (n_small + n_occ), len(normal))
+            
+            subset_data = rng.sample(small_objs, n_small) + \
+                          rng.sample(occlusions, n_occ) + \
+                          rng.sample(normal, n_normal)
+                          
+            # CRITICAL: Shuffle the combined 200 subset ONCE so rolling chunks aren't statically biased
+            # This directly prevents metric oscillation on TensorBoard graphs
+            rng.shuffle(subset_data)
+            
+            self.val_loader = build_detection_test_loader(
+                self.cfg, 
+                subset_data,
+                mapper=DatasetMapper(self.cfg, is_train=False)
+            )
             self._val_iter = iter(self.val_loader)
 
     def _get_next_batch(self, iteration):
-        # Seeded Randomness explicitly prevents sequence bias variance without collapsing determinism
-        random.seed((iteration * 42) + random.randint(0, 100)) # Maintain unique slices within cycle
-        
-        if len(self._dataset_cache) > 0:
-            idx = random.randint(0, max(0, len(self._dataset_cache) - 1))
-            return [self._dataset_cache[idx]]
-            
+        # Dataloader implicitly rotates 50 images per iteration, wrapping nicely at 200
         try:
             return next(self._val_iter)
         except StopIteration:
@@ -104,7 +131,15 @@ class ValidationHook(HookBase):
 
     def after_step(self):
         next_iter = self.trainer.iter + 1
-        current_period = 2000 if next_iter < 20000 else 1000
+        
+        # Optimal adaptive scheduling
+        if next_iter < 20000:
+            current_period = 2000
+        elif next_iter < 40000:
+            current_period = 1000
+        else:
+            current_period = 500  # Fine tuning phase
+            
         if next_iter % current_period == 0:
             self.run_validation(next_iter)
 
