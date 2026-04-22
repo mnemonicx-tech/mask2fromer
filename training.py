@@ -487,8 +487,8 @@ def main(args: argparse.Namespace) -> None:
         cfg.merge_from_list(args.opts)
 
     if args.train_only:
-        # Remove val dataset so no code path can accidentally trigger eval.
-        cfg.DATASETS.TEST = ()
+        # Keep cfg.DATASETS.TEST intact so our ValidationHook can find the validation split natively.
+        # EvalHook is already explicitly skipped because args.train_only sets run_eval=False below.
         cfg.TEST.EVAL_PERIOD = 0
 
     cfg.freeze()
