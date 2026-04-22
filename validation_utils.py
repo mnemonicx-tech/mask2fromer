@@ -123,7 +123,10 @@ class ValidationHook(HookBase):
             
             # Copy metadata so the evaluator mapping perfectly mimics the origin dataset metrics
             from detectron2.data import MetadataCatalog
-            MetadataCatalog.get(subset_name).set(**MetadataCatalog.get(self.dataset_name).as_dict())
+            origin_meta = dict(MetadataCatalog.get(self.dataset_name).as_dict())
+            if "name" in origin_meta:
+                del origin_meta["name"]
+            MetadataCatalog.get(subset_name).set(**origin_meta)
             
             self.val_loader = build_detection_test_loader(
                 self.cfg, 
