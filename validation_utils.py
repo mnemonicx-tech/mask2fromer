@@ -4,8 +4,49 @@ from detectron2.engine.hooks import HookBase
 from detectron2.data import build_detection_test_loader, DatasetMapper, DatasetCatalog
 import logging
 import random
+import copy
+import numpy as np
+from detectron2.data import detection_utils as utils
+from detectron2.data import transforms as T
 
 logger = logging.getLogger(__name__)
+
+class ValidationDatasetMapper:
+    """
+    A brutally minimalist mapper to extract test-size images alongside perfectly mapped
+    Ground Truth BitMasks, bypassing all random training augmentations cleanly.
+    """
+    def __init__(self, cfg):
+        self.image_format = cfg.INPUT.FORMAT
+        self.augmentations = T.AugmentationList([
+            T.ResizeShortestEdge(
+                [cfg.INPUT.MIN_SIZE_TEST, cfg.INPUT.MIN_SIZE_TEST], 
+                cfg.INPUT.MAX_SIZE_TEST
+            )
+        ])
+        
+    def __call__(self, dataset_dict):
+        dataset_dict = copy.deepcopy(dataset_dict)
+        image = utils.read_image(dataset_dict["file_name"], format=self.image_format)
+        utils.check_image_size(dataset_dict, image)
+        
+        aug_input = T.AugInput(image)
+        transforms = self.augmentations(aug_input)
+        image = aug_input.image
+        image_shape = image.shape[:2]
+        
+        dataset_dict["image"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
+
+        if "annotations" in dataset_dict:
+            annos = [
+                utils.transform_instance_annotations(obj, transforms, image_shape)
+                for obj in dataset_dict.pop("annotations")
+                if obj.get("iscrowd", 0) == 0
+            ]
+            instances = utils.annotations_to_instances(annos, image_shape, mask_format="bitmask")
+            dataset_dict["instances"] = instances
+            
+        return dataset_dict
 
 def get_boundaries(masks: torch.Tensor, dilation_kernel_size=3):
     """
@@ -128,24 +169,10 @@ class ValidationHook(HookBase):
                 del origin_meta["name"]
             MetadataCatalog.get(subset_name).set(**origin_meta)
             
-            # Standard is_train=False explicitly strips annotations out of the mapping dict natively!
-            # We must instantiate as is_train=True to force annotations_to_instances translation, 
-            # but instantly strip Train-time Augmentations (Crops, LSJ, etc.) to evaluate accurately!
-            from detectron2.data import DatasetMapper, transforms as T
-            custom_mapper = DatasetMapper(self.cfg, is_train=True)
-            custom_mapper.augmentations = T.AugmentationList([
-                T.ResizeShortestEdge(
-                    [self.cfg.INPUT.MIN_SIZE_TEST, self.cfg.INPUT.MIN_SIZE_TEST], 
-                    self.cfg.INPUT.MAX_SIZE_TEST
-                )
-            ])
-            if hasattr(custom_mapper, "crop_gen"):
-                custom_mapper.crop_gen = None
-            
             self.val_loader = build_detection_test_loader(
                 self.cfg, 
                 subset_name,
-                mapper=custom_mapper
+                mapper=ValidationDatasetMapper(self.cfg)
             )
             self._val_iter = iter(self.val_loader)
 
@@ -204,8 +231,10 @@ class ValidationHook(HookBase):
                     del outputs
                     continue
                     
-                pred_instances = output["instances"]
-                gt_instances = img_data["instances"]
+                # Force tensors to CUDA strictly. Detectron2 evaluation layers natively move outputs to CPU to save 
+                # VRAM, which causes indexing failures and crashes parallel multi-tensor multiplication ops.
+                pred_instances = output["instances"].to("cuda")
+                gt_instances = img_data["instances"].to("cuda")
                 
                 valid_preds = pred_instances[pred_instances.scores > 0.5]
                 
