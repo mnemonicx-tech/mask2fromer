@@ -85,15 +85,19 @@ def build_cfg(
     cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES = 200
     
     # Advanced Point Sampling for Edge Fidelity
+    # 90% of sampled points target boundary/uncertain regions — forces the model
+    # to allocate learning capacity to edges instead of flat interior regions.
     cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS = 20000
-    cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO = 3.0
-    cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO = 0.75
+    cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO = 4.0
+    cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO = 0.9
     cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT = 0.05
     
     # Decoder Depth & Edge-focused Loss Balancing
+    # Higher MASK_WEIGHT (BCE) penalizes individual wrong pixels → sharper edges
+    # Lower DICE_WEIGHT reduces tolerance for blurry overlaps
     cfg.MODEL.MASK_FORMER.DEC_LAYERS = 12
-    cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 4.0
-    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 6.0
+    cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 3.0
+    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 7.0
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
@@ -142,9 +146,9 @@ def build_cfg(
     cfg.SOLVER.OPTIMIZER             = "ADAMW"
     cfg.SOLVER.BACKBONE_MULTIPLIER   = 0.1   # lower LR for pretrained backbone
 
-    # Multi-step LR for rigid phase stabilization
+    # Multi-step LR — earlier drops stabilize edge learning before late-stage degradation
     cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupMultiStepLR"
-    cfg.SOLVER.STEPS             = (20_000, 40_000)
+    cfg.SOLVER.STEPS             = (15_000, 30_000)
     cfg.SOLVER.GAMMA             = 0.1
     cfg.SOLVER.WARMUP_FACTOR     = 1.0 / 1000
     cfg.SOLVER.WARMUP_ITERS      = 1_000
