@@ -339,7 +339,9 @@ def train(
             checkpointer.resume_or_load(cfg.MODEL.WEIGHTS, resume=True).get("iteration", -1) + 1
         )
     else:
-        checkpointer.load(cfg.MODEL.WEIGHTS)
+        # Explicitly pass checkpointables=[] to prevent auto-loading the old optimizer
+        # state. We want a completely fresh optimizer and LR scale for boundary adaptation.
+        checkpointer.load(cfg.MODEL.WEIGHTS, checkpointables=[])
         start_iter = 0
 
     # Fail-fast if checkpoint has NaN/Inf weights (e.g. from a previous corrupted run)
