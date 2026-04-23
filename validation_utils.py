@@ -131,15 +131,27 @@ class ValidationHook(HookBase):
 
             
             if os.path.exists(subset_cache_path):
-                logger.info(f"Loading fast subset cache directly from {subset_cache_path} (Bypassing 11GB RAM Drop)")
+                logger.info(f"Loading fast subset cache from {subset_cache_path}")
                 with open(subset_cache_path, "r") as f:
                     subset_data = json.load(f)
-            else:
+                
+                # Validate cached paths still exist on disk
+                missing = [d for d in subset_data if not os.path.exists(d.get("file_name", ""))]
+                if missing:
+                    logger.warning(f"Cache has {len(missing)} missing files — rebuilding subset")
+                    os.remove(subset_cache_path)
+                    subset_data = None
+                    
+            if not os.path.exists(subset_cache_path):
                 full_dataset = DatasetCatalog.get(self.dataset_name)
                 
                 # Stratified Sampling to enforce rigorous metric balance
                 small_objs, occlusions, normal = [], [], []
                 for d in full_dataset:
+                    # Skip entries where the image file doesn't exist
+                    if not os.path.exists(d.get("file_name", "")):
+                        continue
+                        
                     anns = d.get("annotations", [])
                     
                     # Default to 1024 if somehow missing to prevent crash
