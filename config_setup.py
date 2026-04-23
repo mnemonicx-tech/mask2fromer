@@ -95,9 +95,12 @@ def build_cfg(
     # Decoder Depth & Edge-focused Loss Balancing
     # Higher MASK_WEIGHT (BCE) penalizes individual wrong pixels → sharper edges
     # Lower DICE_WEIGHT reduces tolerance for blurry overlaps
+    # BOUNDARY_WEIGHT adds Sobel-based edge supervision targeting the diagnosed
+    # bleeding failure (masks expanding past GT boundaries, precision=0.27)
     cfg.MODEL.MASK_FORMER.DEC_LAYERS = 12
-    cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 3.0
-    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 7.0
+    cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 1.0
+    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 1.0
+    cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 3.0
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
