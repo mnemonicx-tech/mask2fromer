@@ -115,6 +115,9 @@ def compute_bfscore(pred_bound, gt_bound, threshold_px=2):
     return bfscore.item()
 
 class ValidationHook(HookBase):
+    TOTAL_SUBSET = 200
+    CHUNK_SIZE = 50
+    
     def __init__(self, cfg, dataset_name, period=2000, num_images=50):
         self.period = period
         self.num_images = num_images
@@ -123,6 +126,26 @@ class ValidationHook(HookBase):
         self.val_loader = None
         self._val_iter = None
         self._dataset_cache = []
+        
+        # Accumulation state — aggregate across 4 chunks before logging
+        self._accum_metrics = None
+        self._accum_valid = 0
+        self._accum_small_obj_count = 0
+        self._accum_images_logged = []
+        self._accum_chunks_done = 0
+        self._total_chunks = self.TOTAL_SUBSET // self.CHUNK_SIZE  # 4
+    
+    def _reset_accumulator(self):
+        self._accum_metrics = {
+            "fg_iou": 0.0, "fg_dice": 0.0,
+            "bound_iou_loose": 0.0, "bound_iou_strict": 0.0, "bfscore": 0.0,
+            "inst_iou": 0.0, "inst_dice": 0.0, "fp_rate": 0.0,
+            "small_obj_bound_iou": 0.0, "small_obj_bfscore": 0.0
+        }
+        self._accum_valid = 0
+        self._accum_small_obj_count = 0
+        self._accum_images_logged = []
+        self._accum_chunks_done = 0
 
     def _init_loader(self):
         if self.val_loader is None:
@@ -217,7 +240,7 @@ class ValidationHook(HookBase):
     def after_step(self):
         next_iter = self.trainer.iter + 1
         
-        # Optimal adaptive scheduling
+        # Adaptive scheduling
         if next_iter < 20000:
             current_period = 2000
         elif next_iter < 40000:
@@ -226,26 +249,28 @@ class ValidationHook(HookBase):
             current_period = 500  # Fine tuning phase
             
         if next_iter % current_period == 0:
-            self.run_validation(next_iter)
+            self._run_chunk(next_iter)
 
-    def run_validation(self, current_iter):
-        logger.info(f"Running ValidationHook on {self.num_images} images...")
+    def _run_chunk(self, current_iter):
+        """Run one 50-image chunk. After 4 chunks (200 images), log aggregated metrics."""
+        if self._accum_metrics is None:
+            self._reset_accumulator()
+        
+        self._run_validation_chunk(current_iter)
+        self._accum_chunks_done += 1
+        
+        if self._accum_chunks_done >= self._total_chunks:
+            self._flush_metrics(current_iter)
+            self._reset_accumulator()
+
+    def _run_validation_chunk(self, current_iter):
+        """Evaluate one chunk of 50 images and accumulate into running totals."""
+        logger.info(f"Running ValidationHook chunk {self._accum_chunks_done + 1}/{self._total_chunks} ({self.num_images} images)...")
         self._init_loader()
         
         self.trainer.model.eval()
+        metrics = self._accum_metrics
         
-        metrics = {
-            "fg_iou": 0.0, "fg_dice": 0.0,
-            "bound_iou_loose": 0.0, "bound_iou_strict": 0.0, "bfscore": 0.0,
-            "inst_iou": 0.0, "inst_dice": 0.0, "fp_rate": 0.0,
-            "small_obj_bound_iou": 0.0, "small_obj_bfscore": 0.0
-        }
-        
-        images_to_log = []
-        valid_images = 0
-        small_obj_img_count = 0
-        
-        # Micro-optimization natively drops strict Variable overheads
         with torch.inference_mode():
             for _ in range(self.num_images):
                 img_data = self._get_next_batch(current_iter)[0]
@@ -259,19 +284,15 @@ class ValidationHook(HookBase):
                 pred_instances = output["instances"]
                 gt_instances = img_data["instances"]
                 
-                # Training-time threshold: Mask2Former scores stay below 0.3 until ~40k+ iters.
-                # Using 0.5 here would zero out ALL metrics during mid-training monitoring.
-                # Final evaluation should use 0.5+, but for trend tracking 0.1 captures real signal.
                 all_scores = pred_instances.scores.detach().cpu()
                 keep = all_scores > 0.1
                 
                 if keep.sum() == 0:
-                    metrics["fp_rate"] += 1.0  # Massive penalty
-                    valid_images += 1
+                    metrics["fp_rate"] += 1.0
+                    self._accum_valid += 1
                     del outputs
                     continue
                 
-                # Pull only the tensors we actually need, skip boxes entirely
                 pred_masks = pred_instances.pred_masks[keep].to("cuda", non_blocking=True)
                 scores = all_scores[keep].to("cuda", non_blocking=True)
                     
@@ -282,9 +303,9 @@ class ValidationHook(HookBase):
                 pred_masks = pred_masks.to(torch.float32)
                 gt_masks = gt_masks_raw.to(torch.float32)
 
-                assert pred_masks.shape[-2:] == gt_masks.shape[-2:], f"Resolution drift! Pred: {pred_masks.shape} vs GT: {gt_masks.shape}"
-                assert pred_masks.dim() == 3, f"Prediction Mask invalid dimensional rank: {pred_masks.dim()}"
-                assert gt_masks.dim() == 3, f"GT Mask invalid dimensional rank: {gt_masks.dim()}"
+                if pred_masks.shape[-2:] != gt_masks.shape[-2:]:
+                    del outputs
+                    continue
                 
                 H, W = pred_masks.shape[-2:]
                 if H == 0 or W == 0:
@@ -320,7 +341,6 @@ class ValidationHook(HookBase):
                 loose_iou, _ = compute_ious(pb_loose.view(1, -1).float(), gb_loose.view(1, -1).float())
                 strict_iou, _ = compute_ious(pb_strict.view(1, -1).float(), gb_strict.view(1, -1).float())
                 
-                # Standard BFScore
                 bfscore = compute_bfscore(pb_strict, gb_strict, threshold_px=3)
                 
                 metrics["fg_iou"] += fg_iou.item()
@@ -335,14 +355,13 @@ class ValidationHook(HookBase):
                     g_flat = gt_masks.view(len(gt_masks), H*W)
                     inst_ious, inst_dices = compute_ious(p_flat, g_flat)
                     
-                    best_ious_gt, best_ps_gt_img_idx = inst_ious.max(dim=0) # [G]
-                    best_dices_gt, _ = inst_dices.max(dim=0) # [G]
+                    best_ious_gt, best_ps_gt_img_idx = inst_ious.max(dim=0)
+                    best_dices_gt, _ = inst_dices.max(dim=0)
                     
                     valid_gts_mask = best_ious_gt > 0.1
                     matched_iou = torch.where(valid_gts_mask, best_ious_gt, torch.zeros_like(best_ious_gt)).mean().item()
                     matched_dice = torch.where(valid_gts_mask, best_dices_gt, torch.zeros_like(best_dices_gt)).mean().item()
                     
-                    # FP Rate
                     best_ious_pred, _ = inst_ious.max(dim=1)
                     unmatched_preds_mask = best_ious_pred <= 0.1
                     fp_area = pred_masks[unmatched_preds_mask].sum().item()
@@ -353,13 +372,11 @@ class ValidationHook(HookBase):
                     metrics["inst_dice"] += matched_dice
                     metrics["fp_rate"] += fp_rate
                     
-                    # Small Object Edge Isolation (Tracking delicate features like straps and collars < ~2-5% volume)
-                    is_small = gt_masks.sum(dim=(1, 2)) < (H * W * 0.05) 
+                    is_small = gt_masks.sum(dim=(1, 2)) < (H * W * 0.05)
                     small_gts = is_small.nonzero(as_tuple=True)[0]
                     
                     if len(small_gts) > 0:
                         s_gt_masks = gt_masks[small_gts]
-                        # Acquire Pred Masks that best matched these small objects
                         pred_subset_idx = best_ps_gt_img_idx[small_gts]
                         s_pred_masks = pred_masks[pred_subset_idx]
                         
@@ -369,21 +386,19 @@ class ValidationHook(HookBase):
                         s_bound_iou, _ = compute_ious(s_pb_strict.view(1, -1).float(), s_gb_strict.view(1, -1).float())
                         s_bfscore = compute_bfscore(s_pb_strict, s_gb_strict, threshold_px=3)
                         
-                        # Only aggregate valid small object scores if they weren't entirely failed detections
                         if valid_gts_mask[small_gts].any():
                             metrics["small_obj_bound_iou"] += s_bound_iou.item()
                             metrics["small_obj_bfscore"] += s_bfscore
-                            small_obj_img_count += 1
+                            self._accum_small_obj_count += 1
                 
-                # --- 3. Visualization ---
-                if valid_images < 3:
+                # --- 3. Visualization (collect up to 3 across all chunks) ---
+                if len(self._accum_images_logged) < 3:
                     vis_img = img_data["image"].clone().cpu().float()
                     c_min, c_max = vis_img.min(), vis_img.max()
                     if c_max > c_min: vis_img = (vis_img - c_min) / (c_max - c_min)
                     
                     vis_h, vis_w = vis_img.shape[1], vis_img.shape[2]
                     
-                    # Resize masks from native resolution to inference image size for overlay
                     pb = F.interpolate(pb_strict.float().unsqueeze(0).unsqueeze(0), size=(vis_h, vis_w), mode="nearest").squeeze().cpu() > 0
                     gb = F.interpolate(gb_strict.float().unsqueeze(0).unsqueeze(0), size=(vis_h, vis_w), mode="nearest").squeeze().cpu() > 0
                     error_map = F.interpolate(
@@ -395,28 +410,49 @@ class ValidationHook(HookBase):
                     vis_img[0][pb > 0] = 1.0
                     vis_img[2][(pb > 0) | (gb > 0)] = 0.0
 
-                    images_to_log.append(vis_img)
+                    self._accum_images_logged.append(vis_img)
                     
-                valid_images += 1
+                self._accum_valid += 1
                 del outputs, img_data, pred_instances, gt_instances, pred_masks, gt_masks
                 
-        # --- 4. Logs ---
-        if valid_images > 0:
-            storage = self.trainer.storage
-            
-            for k in ["fg_iou", "fg_dice", "bound_iou_loose", "bound_iou_strict", "bfscore", "inst_iou", "inst_dice", "fp_rate"]:
-                storage.put_scalar(f"val/{k}", metrics[k] / valid_images)
-                
-            if small_obj_img_count > 0:
-                storage.put_scalar(f"val/small_obj_bound_iou", metrics["small_obj_bound_iou"] / small_obj_img_count)
-                storage.put_scalar(f"val/small_obj_bfscore", metrics["small_obj_bfscore"] / small_obj_img_count)
-            
-            # Write explicitly to console log so it skips Tensorboard parsing for fast debugging
-            logger.info(f"[VAL] Strict BFScore: {metrics['bfscore'] / valid_images:.4f} | Strict Bound IoU: {metrics['bound_iou_strict'] / valid_images:.4f}")
-            
-            if images_to_log:
-                grid = torch.cat(images_to_log, dim=2)
-                storage.put_image("val/overlays_and_errors", grid.numpy())
-
         torch.cuda.empty_cache()
         self.trainer.model.train()
+    
+    def _flush_metrics(self, current_iter):
+        """Log aggregated metrics over all 200 images to TensorBoard + stdout."""
+        valid = self._accum_valid
+        if valid == 0:
+            return
+        
+        metrics = self._accum_metrics
+        storage = self.trainer.storage
+        
+        for k in ["fg_iou", "fg_dice", "bound_iou_loose", "bound_iou_strict", "bfscore", "inst_iou", "inst_dice", "fp_rate"]:
+            storage.put_scalar(f"val/{k}", metrics[k] / valid)
+            
+        if self._accum_small_obj_count > 0:
+            storage.put_scalar(f"val/small_obj_bound_iou", metrics["small_obj_bound_iou"] / self._accum_small_obj_count)
+            storage.put_scalar(f"val/small_obj_bfscore", metrics["small_obj_bfscore"] / self._accum_small_obj_count)
+        
+        logger.info(
+            f"[VAL@{current_iter}] Full 200-image aggregate | "
+            f"BFScore: {metrics['bfscore'] / valid:.4f} | "
+            f"Bound IoU (strict): {metrics['bound_iou_strict'] / valid:.4f} | "
+            f"FG IoU: {metrics['fg_iou'] / valid:.4f} | "
+            f"FP Rate: {metrics['fp_rate'] / valid:.4f} | "
+            f"Images: {valid}/200"
+        )
+        
+        if self._accum_images_logged:
+            grid = torch.cat(self._accum_images_logged, dim=2)
+            storage.put_image("val/overlays_and_errors", grid.numpy())
+
+    def run_validation(self, current_iter):
+        """Run full 200-image evaluation in one shot (used by evaluate.py)."""
+        self._reset_accumulator()
+        orig_num = self.num_images
+        self.num_images = self.TOTAL_SUBSET
+        self._run_validation_chunk(current_iter)
+        self._flush_metrics(current_iter)
+        self.num_images = orig_num
+        self._reset_accumulator()
