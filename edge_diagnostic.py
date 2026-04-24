@@ -198,7 +198,7 @@ def main():
     parser.add_argument("--num-images", type=int, default=20)
     parser.add_argument("--output-dir", default="./edge_diagnostic")
     parser.add_argument("--backbone", default="SWIN_T")
-    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--threshold", type=float, default=0.1)
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
@@ -259,31 +259,26 @@ def main():
             output = outputs[0]
             
             if "instances" not in output or "instances" not in img_data:
+                logger.warning(f"  [{idx:3d}] Skipping: No instances found in output/GT")
                 continue
             
             pred_inst = output["instances"]
             gt_inst = img_data["instances"]
+
             
             scores = pred_inst.scores.detach().cpu()
             keep = scores > args.threshold
-
-            # Prefer class-aware filtering so boundary errors are not inflated by
-            # unrelated category predictions in multi-object scenes.
-            if hasattr(pred_inst, "pred_classes") and len(gt_inst.gt_classes) > 0:
-                gt_classes = set(gt_inst.gt_classes.detach().cpu().tolist())
-                pred_classes = pred_inst.pred_classes.detach().cpu()
-                class_keep = torch.zeros_like(pred_classes, dtype=torch.bool)
-                for cid in gt_classes:
-                    class_keep |= (pred_classes == cid)
-                keep = keep & class_keep
             
             if keep.sum() == 0:
+                max_score = scores.max().item() if scores.numel() > 0 else 0.0
+                logger.warning(f"  [{idx:3d}] Skipping image: No detections > {args.threshold} (Max score: {max_score:.3f})")
                 continue
             
             pred_masks = pred_inst.pred_masks[keep].to("cuda").float()
             gt_masks = gt_inst.gt_masks.tensor.to("cuda").float()
             
             if pred_masks.shape[-2:] != gt_masks.shape[-2:]:
+                logger.warning(f"  [{idx:3d}] Skipping image: Shape mismatch {pred_masks.shape} vs {gt_masks.shape}")
                 continue
             
             # Get category name

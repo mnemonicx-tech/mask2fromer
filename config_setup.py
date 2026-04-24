@@ -99,8 +99,8 @@ def build_cfg(
     # bleeding failure (masks expanding past GT boundaries, precision=0.27)
     cfg.MODEL.MASK_FORMER.DEC_LAYERS = 12
     cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 1.0
-    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 1.0
-    cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 3.0
+    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 0.7
+    cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 5.0
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
