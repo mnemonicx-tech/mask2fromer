@@ -27,21 +27,18 @@ import time
 #  CONFIGURE THESE — edit to match your server paths
 # ═══════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    "output_dir":    "./output_swin_fashion",
+    "output_dir":    "./output_97cls_100k",
     "train_json":    "/ephemeral/training_data/annotations/instances_train.json",
     "val_json":      "/ephemeral/training_data/annotations/instances_val.json",
     "train_images":  "/ephemeral/training_data/images/train",
     "val_images":    "/ephemeral/training_data/images/val",
-    "ims_per_batch": 12,
-    "num_workers":   24,
-    "grad_accum":    1,   # no accumulation needed: IMS_PER_BATCH=10 is the full effective batch
+    "ims_per_batch": 16,
+    "num_workers":   16,
+    "grad_accum":    1,   # no accumulation needed: IMS_PER_BATCH=16 is the full effective batch
     "max_iter":      60_000,
     "eval_period":   999_999,       # skip eval during training (run offline later)
-    "checkpoint_period": 2_500,
-    "base_lr":       "5e-5",
-    "backbone":      "SWIN_T",
-    "pretrained_weights": "./swin_tiny_patch4_window7_224.pth",
-    "backbone_multiplier": "0.2"
+    "checkpoint_period": 10_000,
+    "base_lr":       "1e-4",
 }
 
 # Retry settings
@@ -68,13 +65,10 @@ def build_command() -> list:
         "--num-workers",     str(CONFIG["num_workers"]),
         "--grad-accum-steps", str(CONFIG["grad_accum"]),
         "--max-iter",        str(CONFIG["max_iter"]),
-        "--backbone",        CONFIG["backbone"],
         # Detectron2 overrides via opts
         f"SOLVER.BASE_LR",         CONFIG["base_lr"],
         f"TEST.EVAL_PERIOD",       str(CONFIG["eval_period"]),
         f"SOLVER.CHECKPOINT_PERIOD", str(CONFIG["checkpoint_period"]),
-        f"SOLVER.BACKBONE_MULTIPLIER", CONFIG["backbone_multiplier"],
-        f"MODEL.WEIGHTS",          CONFIG["pretrained_weights"],
     ]
     return cmd
 

@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 
-def make_edge_comparison(img_tensor, pred_masks, gt_masks, score_threshold=0.1):
+def make_edge_comparison(img_tensor, pred_masks, gt_masks, score_threshold=0.5):
     """Generate a multi-panel edge diagnostic image.
     
     Panels:
@@ -198,7 +198,8 @@ def main():
     parser.add_argument("--num-images", type=int, default=20)
     parser.add_argument("--output-dir", default="./edge_diagnostic")
     parser.add_argument("--backbone", default="SWIN_T")
-    parser.add_argument("--threshold", type=float, default=0.1)
+    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for repeatable sampling")
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
@@ -222,6 +223,10 @@ def main():
     # Group images by class for balanced random sampling
     from collections import defaultdict
     import random
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
     
     class_to_imgs = defaultdict(list)
     for d in dataset_dicts:
@@ -231,7 +236,7 @@ def main():
             class_to_imgs[cat_id].append(d)
             
     # Sample categories then sample one image from each
-    available_cats = list(class_to_imgs.keys())
+    available_cats = sorted(class_to_imgs.keys())
     random.shuffle(available_cats)
     
     selected_dicts = []
@@ -252,7 +257,10 @@ def main():
     skipped_shape_mismatch = 0
     skipped_exceptions = 0
     
-    logger.info(f"Generating edge diagnostics for {len(selected_dicts)} random images from random classes...")
+    logger.info(
+        f"Generating edge diagnostics for {len(selected_dicts)} random images from random classes "
+        f"(threshold={args.threshold}, seed={args.seed})..."
+    )
     
     with torch.inference_mode():
         for idx, d in enumerate(selected_dicts):
@@ -273,6 +281,16 @@ def main():
 
                 scores = pred_inst.scores.detach().cpu()
                 keep = scores > args.threshold
+
+                # Filter predictions to classes present in GT for this image so
+                # unrelated classes do not inflate apparent edge bleeding.
+                if hasattr(pred_inst, "pred_classes") and len(gt_inst.gt_classes) > 0:
+                    gt_classes = set(gt_inst.gt_classes.detach().cpu().tolist())
+                    pred_classes = pred_inst.pred_classes.detach().cpu()
+                    class_keep = torch.zeros_like(pred_classes, dtype=torch.bool)
+                    for cid in gt_classes:
+                        class_keep |= (pred_classes == cid)
+                    keep = keep & class_keep
 
                 if keep.sum() == 0:
                     skipped_no_detections += 1

@@ -90,7 +90,7 @@ def build_cfg(
     cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS = 20000
     cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO = 4.0
     cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO = 0.9
-    cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT = 0.05
+    cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT = 0.1
     
     # Decoder Depth & Edge-focused Loss Balancing
     # Higher MASK_WEIGHT (BCE) penalizes individual wrong pixels → sharper edges
@@ -99,8 +99,8 @@ def build_cfg(
     # bleeding failure (masks expanding past GT boundaries, precision=0.27)
     cfg.MODEL.MASK_FORMER.DEC_LAYERS = 12
     cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 1.0
-    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 0.7
-    cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 5.0
+    cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 0.6
+    cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 6.0
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
