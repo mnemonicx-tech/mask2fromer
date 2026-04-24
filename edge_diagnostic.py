@@ -247,71 +247,87 @@ def main():
     # Aggregate failure stats
     all_metrics = []
     failure_types = {'bleeding': 0, 'missing': 0, 'balanced': 0}
+    skipped_no_instances = 0
+    skipped_no_detections = 0
+    skipped_shape_mismatch = 0
+    skipped_exceptions = 0
     
     logger.info(f"Generating edge diagnostics for {len(selected_dicts)} random images from random classes...")
     
     with torch.inference_mode():
         for idx, d in enumerate(selected_dicts):
-            # Map the raw dict to the format the model expects
-            img_data = mapper(d)
+            try:
+                # Map the raw dict to the format the model expects
+                img_data = mapper(d)
 
-            outputs = model([img_data])
-            output = outputs[0]
-            
-            if "instances" not in output or "instances" not in img_data:
-                logger.warning(f"  [{idx:3d}] Skipping: No instances found in output/GT")
-                continue
-            
-            pred_inst = output["instances"]
-            gt_inst = img_data["instances"]
+                outputs = model([img_data])
+                output = outputs[0]
 
-            
-            scores = pred_inst.scores.detach().cpu()
-            keep = scores > args.threshold
-            
-            if keep.sum() == 0:
-                max_score = scores.max().item() if scores.numel() > 0 else 0.0
-                logger.warning(f"  [{idx:3d}] Skipping image: No detections > {args.threshold} (Max score: {max_score:.3f})")
-                continue
-            
-            pred_masks = pred_inst.pred_masks[keep].to("cuda").float()
-            gt_masks = gt_inst.gt_masks.tensor.to("cuda").float()
-            
-            if pred_masks.shape[-2:] != gt_masks.shape[-2:]:
-                logger.warning(f"  [{idx:3d}] Skipping image: Shape mismatch {pred_masks.shape} vs {gt_masks.shape}")
-                continue
-            
-            # Get category name
-            cat_id = gt_inst.gt_classes[0].item() if len(gt_inst.gt_classes) > 0 else -1
-            cat_name = thing_classes[cat_id] if 0 <= cat_id < len(thing_classes) else "unknown"
-            
-            panels, metrics = make_edge_comparison(
-                img_data["image"], pred_masks, gt_masks, args.threshold
-            )
-            
-            path = save_diagnostic(panels, metrics, idx, args.output_dir, cat_name)
-            all_metrics.append(metrics)
-            
-            # Classify failure type
-            if metrics['extra_px'] > metrics['missing_px'] * 2:
-                failure_types['bleeding'] += 1
-                ftype = "BLEEDING"
-            elif metrics['missing_px'] > metrics['extra_px'] * 2:
-                failure_types['missing'] += 1
-                ftype = "MISSING"
-            else:
-                failure_types['balanced'] += 1
-                ftype = "balanced"
-            
-            logger.info(
-                f"  [{idx:3d}] {cat_name:40s} | "
-                f"BFS={metrics['bfscore']:.3f} | "
-                f"Recall={metrics['recall']:.3f} | "
-                f"Prec={metrics['precision']:.3f} | "
-                f"{ftype}"
-            )
-            
-            del outputs, pred_masks, gt_masks
+                if "instances" not in output or "instances" not in img_data:
+                    skipped_no_instances += 1
+                    logger.warning(f"  [{idx:3d}] Skipping: No instances found in output/GT")
+                    continue
+
+                pred_inst = output["instances"]
+                gt_inst = img_data["instances"]
+
+                scores = pred_inst.scores.detach().cpu()
+                keep = scores > args.threshold
+
+                if keep.sum() == 0:
+                    skipped_no_detections += 1
+                    max_score = scores.max().item() if scores.numel() > 0 else 0.0
+                    logger.warning(
+                        f"  [{idx:3d}] Skipping image: No detections > {args.threshold} "
+                        f"(Max score: {max_score:.3f})"
+                    )
+                    continue
+
+                pred_masks = pred_inst.pred_masks[keep].to("cuda").float()
+                gt_masks = gt_inst.gt_masks.tensor.to("cuda").float()
+
+                if pred_masks.shape[-2:] != gt_masks.shape[-2:]:
+                    skipped_shape_mismatch += 1
+                    logger.warning(
+                        f"  [{idx:3d}] Skipping image: Shape mismatch "
+                        f"{pred_masks.shape} vs {gt_masks.shape}"
+                    )
+                    continue
+
+                # Get category name
+                cat_id = gt_inst.gt_classes[0].item() if len(gt_inst.gt_classes) > 0 else -1
+                cat_name = thing_classes[cat_id] if 0 <= cat_id < len(thing_classes) else "unknown"
+
+                panels, metrics = make_edge_comparison(
+                    img_data["image"], pred_masks, gt_masks, args.threshold
+                )
+
+                path = save_diagnostic(panels, metrics, idx, args.output_dir, cat_name)
+                all_metrics.append(metrics)
+
+                # Classify failure type
+                if metrics['extra_px'] > metrics['missing_px'] * 2:
+                    failure_types['bleeding'] += 1
+                    ftype = "BLEEDING"
+                elif metrics['missing_px'] > metrics['extra_px'] * 2:
+                    failure_types['missing'] += 1
+                    ftype = "MISSING"
+                else:
+                    failure_types['balanced'] += 1
+                    ftype = "balanced"
+
+                logger.info(
+                    f"  [{idx:3d}] {cat_name:40s} | "
+                    f"BFS={metrics['bfscore']:.3f} | "
+                    f"Recall={metrics['recall']:.3f} | "
+                    f"Prec={metrics['precision']:.3f} | "
+                    f"{ftype}"
+                )
+
+                del outputs, pred_masks, gt_masks
+            except Exception as e:
+                skipped_exceptions += 1
+                logger.exception(f"  [{idx:3d}] Skipping image due to exception: {e}")
     
     # Summary
     if all_metrics:
@@ -348,6 +364,20 @@ def main():
         logger.info(f"  Panels: Original | GT Boundary | Pred Boundary | Edge Error | Mask Error")
         logger.info(f"  Colors: Green=correct | Blue=missing | Red=bleeding")
         logger.info(f"{'='*70}\n")
+    else:
+        logger.warning(f"\n{'='*70}")
+        logger.warning("  EDGE FAILURE ANALYSIS: NO VALID SAMPLES")
+        logger.warning(f"{'='*70}")
+        logger.warning(f"  Requested images: {len(selected_dicts)}")
+        logger.warning(f"  Skipped (no instances):      {skipped_no_instances}")
+        logger.warning(f"  Skipped (no detections):     {skipped_no_detections}")
+        logger.warning(f"  Skipped (shape mismatch):    {skipped_shape_mismatch}")
+        logger.warning(f"  Skipped (exceptions):        {skipped_exceptions}")
+        logger.warning("  Tips:")
+        logger.warning("    - Lower threshold: --threshold 0.05")
+        logger.warning("    - Verify weights/backbone pair")
+        logger.warning("    - Re-run with --num-images 5 for quick debugging")
+        logger.warning(f"{'='*70}\n")
 
 
 if __name__ == "__main__":
