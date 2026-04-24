@@ -338,7 +338,9 @@ def train(
             checkpointer.resume_or_load(cfg.MODEL.WEIGHTS, resume=True).get("iteration", -1) + 1
         )
     else:
-        checkpointer.load(cfg.MODEL.WEIGHTS)
+        # checkpointables=[] loads ONLY model weights — skips optimizer/scheduler state.
+        # This is required when the loss function or parameter groups change between runs.
+        checkpointer.load(cfg.MODEL.WEIGHTS, checkpointables=[])
         start_iter = 0
 
     # Fail-fast if checkpoint has NaN/Inf weights (e.g. from a previous corrupted run)
