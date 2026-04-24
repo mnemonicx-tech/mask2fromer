@@ -216,24 +216,45 @@ def main():
     model.eval()
     DetectionCheckpointer(model).load(args.weights)
     
-    # Load from validation subset
-    loader = build_detection_test_loader(
-        cfg, "fashion_val",
-        mapper=ValidationDatasetMapper(cfg)
-    )
+    # Load dataset list to enable random sampling across classes
+    dataset_dicts = DatasetCatalog.get("fashion_val")
+    
+    # Group images by class for balanced random sampling
+    from collections import defaultdict
+    import random
+    
+    class_to_imgs = defaultdict(list)
+    for d in dataset_dicts:
+        # Assuming one annotation per image based on previous verification
+        if len(d["annotations"]) > 0:
+            cat_id = d["annotations"][0]["category_id"]
+            class_to_imgs[cat_id].append(d)
+            
+    # Sample categories then sample one image from each
+    available_cats = list(class_to_imgs.keys())
+    random.shuffle(available_cats)
+    
+    selected_dicts = []
+    for cat_id in available_cats:
+        if len(selected_dicts) >= args.num_images:
+            break
+        img_dict = random.choice(class_to_imgs[cat_id])
+        selected_dicts.append(img_dict)
+
+    # Use a simple mapper-based loader for the selected images
+    mapper = ValidationDatasetMapper(cfg)
     
     # Aggregate failure stats
     all_metrics = []
     failure_types = {'bleeding': 0, 'missing': 0, 'balanced': 0}
     
-    logger.info(f"Generating edge diagnostics for {args.num_images} images...")
+    logger.info(f"Generating edge diagnostics for {len(selected_dicts)} random images from random classes...")
     
     with torch.inference_mode():
-        for idx, batch in enumerate(loader):
-            if idx >= args.num_images:
-                break
-            
-            img_data = batch[0]
+        for idx, d in enumerate(selected_dicts):
+            # Map the raw dict to the format the model expects
+            img_data = mapper(d)
+
             outputs = model([img_data])
             output = outputs[0]
             
