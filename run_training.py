@@ -27,18 +27,27 @@ import time
 #  CONFIGURE THESE — edit to match your server paths
 # ═══════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    "output_dir":    "./output_97cls_100k",
-    "train_json":    "/ephemeral/training_data/annotations/instances_train.json",
-    "val_json":      "/ephemeral/training_data/annotations/instances_val.json",
-    "train_images":  "/ephemeral/training_data/images/train",
-    "val_images":    "/ephemeral/training_data/images/val",
-    "ims_per_batch": 16,
-    "num_workers":   16,
-    "grad_accum":    1,   # no accumulation needed: IMS_PER_BATCH=16 is the full effective batch
-    "max_iter":      60_000,
-    "eval_period":   999_999,       # skip eval during training (run offline later)
-    "checkpoint_period": 10_000,
-    "base_lr":       "1e-4",
+    # ── Run 1: FP hard-mining precision correction ────────────────────────────
+    # NO --resume: optimizer state is reset intentionally (loss fn changed).
+    # Weights loaded via MODEL.WEIGHTS instead.
+    "output_dir":       "./output_swin_boundary_precision_fp",
+    "model_weights":    "./output_swin_boundary/model_final.pth",  # <-- set to your last best checkpoint
+    "train_json":       "/ephemeral/training_data/annotations/instances_train.json",
+    "val_json":         "/ephemeral/training_data/annotations/instances_val.json",
+    "train_images":     "/ephemeral/training_data/images/train",
+    "val_images":       "/ephemeral/training_data/images/val",
+    "ims_per_batch":    12,
+    "num_workers":      16,
+    "grad_accum":       1,
+    "max_iter":         5_000,
+    "eval_period":      1_000,
+    "checkpoint_period": 1_000,
+    "base_lr":          "5e-6",
+    # LR decay steps — mild annealing in the last 1500 iters
+    "solver_steps":     "(3500,4500)",
+    # Boundary precision weights (must match criterion.py state)
+    "boundary_weight":  "6.0",
+    "mask_weight":      "0.6",
 }
 
 # Retry settings
@@ -53,22 +62,26 @@ def build_command() -> list:
     """Build the training.py subprocess command."""
     cmd = [
         sys.executable, "training.py",
-        "--resume",
-        "--train-only",          # skip all eval during training — run offline later
-        "--output-dir",      CONFIG["output_dir"],
-        # No --classes-file needed: hardcoded 97-class list in register_dataset.py matches exactly.
-        "--train-json",      CONFIG["train_json"],
-        "--val-json",        CONFIG["val_json"],
-        "--train-images",    CONFIG["train_images"],
-        "--val-images",      CONFIG["val_images"],
-        "--ims-per-batch",   str(CONFIG["ims_per_batch"]),
-        "--num-workers",     str(CONFIG["num_workers"]),
+        # NO --resume: optimizer state intentionally reset because the loss fn changed.
+        # Weights are loaded via MODEL.WEIGHTS below instead.
+        "--train-only",
+        "--output-dir",       CONFIG["output_dir"],
+        "--train-json",       CONFIG["train_json"],
+        "--val-json",         CONFIG["val_json"],
+        "--train-images",     CONFIG["train_images"],
+        "--val-images",       CONFIG["val_images"],
+        "--ims-per-batch",    str(CONFIG["ims_per_batch"]),
+        "--num-workers",      str(CONFIG["num_workers"]),
         "--grad-accum-steps", str(CONFIG["grad_accum"]),
-        "--max-iter",        str(CONFIG["max_iter"]),
-        # Detectron2 overrides via opts
-        f"SOLVER.BASE_LR",         CONFIG["base_lr"],
-        f"TEST.EVAL_PERIOD",       str(CONFIG["eval_period"]),
-        f"SOLVER.CHECKPOINT_PERIOD", str(CONFIG["checkpoint_period"]),
+        "--max-iter",         str(CONFIG["max_iter"]),
+        # Detectron2 opts
+        "MODEL.WEIGHTS",                    CONFIG["model_weights"],
+        "SOLVER.BASE_LR",                   CONFIG["base_lr"],
+        "SOLVER.STEPS",                     CONFIG["solver_steps"],
+        "TEST.EVAL_PERIOD",                 str(CONFIG["eval_period"]),
+        "SOLVER.CHECKPOINT_PERIOD",         str(CONFIG["checkpoint_period"]),
+        "MODEL.MASK_FORMER.BOUNDARY_WEIGHT", CONFIG["boundary_weight"],
+        "MODEL.MASK_FORMER.MASK_WEIGHT",    CONFIG["mask_weight"],
     ]
     return cmd
 

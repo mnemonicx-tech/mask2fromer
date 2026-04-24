@@ -7,7 +7,6 @@ import queue
 import sys
 import threading
 import time
-from validation_utils import ValidationHook
 from typing import Dict, List, Optional
 
 # ── NumPy/Torch compatibility guard ──────────────────────────────────────────
@@ -183,7 +182,7 @@ class GradAccumAMPTrainer(AMPTrainer):
         for step in range(self.accum_steps):
             data = next(self._data_loader_iter)
             try:
-                with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                with torch.cuda.amp.autocast(enabled=True):
                     loss_dict = self.model(data)
                     losses = sum(loss_dict.values()) / self.accum_steps
             except (ValueError, RuntimeError) as e:
@@ -339,9 +338,7 @@ def train(
             checkpointer.resume_or_load(cfg.MODEL.WEIGHTS, resume=True).get("iteration", -1) + 1
         )
     else:
-        # Explicitly pass checkpointables=[] to prevent auto-loading the old optimizer
-        # state. We want a completely fresh optimizer and LR scale for boundary adaptation.
-        checkpointer.load(cfg.MODEL.WEIGHTS, checkpointables=[])
+        checkpointer.load(cfg.MODEL.WEIGHTS)
         start_iter = 0
 
     # Fail-fast if checkpoint has NaN/Inf weights (e.g. from a previous corrupted run)
@@ -376,7 +373,6 @@ def train(
             run_eval, cfg.TEST.EVAL_PERIOD,
         )
     active_hooks += [
-        ValidationHook(cfg, cfg.DATASETS.TEST[0], period=2000, num_images=50),
         GPUMemoryHook(period=log_gpu_mem_interval),
         hooks.PeriodicWriter(
             [
@@ -489,8 +485,8 @@ def main(args: argparse.Namespace) -> None:
         cfg.merge_from_list(args.opts)
 
     if args.train_only:
-        # Keep cfg.DATASETS.TEST intact so our ValidationHook can find the validation split natively.
-        # EvalHook is already explicitly skipped because args.train_only sets run_eval=False below.
+        # Remove val dataset so no code path can accidentally trigger eval.
+        cfg.DATASETS.TEST = ()
         cfg.TEST.EVAL_PERIOD = 0
 
     cfg.freeze()
