@@ -198,7 +198,7 @@ def main():
     parser.add_argument("--num-images", type=int, default=20)
     parser.add_argument("--output-dir", default="./edge_diagnostic")
     parser.add_argument("--backbone", default="SWIN_T")
-    parser.add_argument("--threshold", type=float, default=0.1)
+    parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
@@ -266,6 +266,16 @@ def main():
             
             scores = pred_inst.scores.detach().cpu()
             keep = scores > args.threshold
+
+            # Prefer class-aware filtering so boundary errors are not inflated by
+            # unrelated category predictions in multi-object scenes.
+            if hasattr(pred_inst, "pred_classes") and len(gt_inst.gt_classes) > 0:
+                gt_classes = set(gt_inst.gt_classes.detach().cpu().tolist())
+                pred_classes = pred_inst.pred_classes.detach().cpu()
+                class_keep = torch.zeros_like(pred_classes, dtype=torch.bool)
+                for cid in gt_classes:
+                    class_keep |= (pred_classes == cid)
+                keep = keep & class_keep
             
             if keep.sum() == 0:
                 continue
