@@ -182,6 +182,10 @@ class GradAccumAMPTrainer(AMPTrainer):
 
         for step in range(self.accum_steps):
             data = next(self._data_loader_iter)
+            model_obj = self.model.module if hasattr(self.model, "module") else self.model
+            criterion = getattr(model_obj, "criterion", None)
+            if criterion is not None and hasattr(criterion, "set_iteration"):
+                criterion.set_iteration(self.storage.iter)
             try:
                 with torch.cuda.amp.autocast(enabled=True):
                     loss_dict = self.model(data)

@@ -46,8 +46,9 @@ BASE_CONFIG = {
     # Boundary precision correction knobs
     "boundary_weight":               "6.0",
     "mask_weight":                   "0.6",
-    "boundary_fp_hard_weight":       "1.0",
-    "boundary_fp_hard_ratio":        "0.03",
+    "boundary_fp_hard_weight":       "0.5",
+    "boundary_fp_hard_ratio":        "0.01",
+    "boundary_fp_warmup_iters":      "1000",
 }
 
 BACKBONE_PROFILES = {
@@ -167,6 +168,7 @@ def build_command() -> list:
         "MODEL.MASK_FORMER.MASK_WEIGHT",    CONFIG["mask_weight"],
         "MODEL.MASK_FORMER.BOUNDARY_FP_HARD_WEIGHT", CONFIG["boundary_fp_hard_weight"],
         "MODEL.MASK_FORMER.BOUNDARY_FP_HARD_RATIO", CONFIG["boundary_fp_hard_ratio"],
+        "MODEL.MASK_FORMER.BOUNDARY_FP_WARMUP_ITERS", CONFIG["boundary_fp_warmup_iters"],
         "MODEL.MASK_FORMER.BOUNDARY_SIZE_WEIGHT_ENABLED", CONFIG["boundary_size_weight_enabled"],
     ]
     return cmd

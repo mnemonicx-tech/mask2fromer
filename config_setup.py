@@ -152,8 +152,10 @@ def build_cfg(
     cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 1.0
     cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 0.6
     cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 6.0
-    cfg.MODEL.MASK_FORMER.BOUNDARY_FP_HARD_WEIGHT = 1.0
-    cfg.MODEL.MASK_FORMER.BOUNDARY_FP_HARD_RATIO = 0.03
+    # Start conservative to avoid iter-0 gradient spikes from hard-negative mining.
+    cfg.MODEL.MASK_FORMER.BOUNDARY_FP_HARD_WEIGHT = 0.5
+    cfg.MODEL.MASK_FORMER.BOUNDARY_FP_HARD_RATIO = 0.01
+    cfg.MODEL.MASK_FORMER.BOUNDARY_FP_WARMUP_ITERS = 1000
     cfg.MODEL.MASK_FORMER.BOUNDARY_SIZE_WEIGHT_ENABLED = False
 
     # -----------------------------------------------------------------------
