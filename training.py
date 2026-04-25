@@ -184,7 +184,10 @@ class GradAccumAMPTrainer(AMPTrainer):
             try:
                 with torch.cuda.amp.autocast(enabled=True):
                     loss_dict = self.model(data)
-                    losses = sum(loss_dict.values()) / self.accum_steps
+                    loss_terms = [v for k, v in loss_dict.items() if k.startswith("loss_")]
+                    if not loss_terms:
+                        raise RuntimeError("Model returned no optimization losses (expected keys starting with 'loss_').")
+                    losses = sum(loss_terms) / self.accum_steps
             except (ValueError, RuntimeError) as e:
                 logger.warning(f"Skipping bad batch (exception) at accum step {step}: {e}")
                 self.optimizer.zero_grad(set_to_none=True)
@@ -241,7 +244,7 @@ class GradAccumAMPTrainer(AMPTrainer):
                 self.optimizer.zero_grad(set_to_none=True)
                 self.grad_scaler.update()  # lets scaler reduce its scale factor
                 data_time = time.perf_counter() - start
-                total_loss = sum(loss_dict_accum.values()) if loss_dict_accum else float("nan")
+                total_loss = sum(v for k, v in loss_dict_accum.items() if k.startswith("loss_"))
                 self.storage.put_scalars(
                     total_loss=total_loss, data_time=data_time, **loss_dict_accum
                 )
@@ -255,7 +258,7 @@ class GradAccumAMPTrainer(AMPTrainer):
         self.grad_scaler.update()
 
         data_time  = time.perf_counter() - start
-        total_loss = sum(loss_dict_accum.values())
+        total_loss = sum(v for k, v in loss_dict_accum.items() if k.startswith("loss_"))
         self.storage.put_scalars(
             total_loss=total_loss, data_time=data_time, **loss_dict_accum
         )
@@ -408,7 +411,12 @@ def train(
 def get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Mask2Former fashion training")
     parser.add_argument("--output-dir", default="./output", help="Output directory for logs/checkpoints")
-    parser.add_argument("--backbone", default="R50", choices=["R50", "SWIN_T"], help="Backbone model")
+    parser.add_argument(
+        "--backbone",
+        default="R50",
+        choices=["R50", "SWIN_T", "SWIN_B", "SWIN_L"],
+        help="Backbone model",
+    )
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs")
     parser.add_argument("--num-machines", type=int, default=1)

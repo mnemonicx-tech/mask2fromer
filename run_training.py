@@ -4,7 +4,7 @@ run_training.py — Resilient training launcher with auto-restart.
 
 Wraps training.py with:
   - Auto-restart on crash (OOM, NaN, DataLoader errors)
-  - Always resumes from last checkpoint
+    - Restarts from latest checkpoint weights (optimizer state is intentionally reset)
   - Exponential backoff on repeated failures
   - GPU memory cleanup between retries
   - Logging of all crashes to a persistent log
@@ -25,30 +25,92 @@ import time
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CONFIGURE THESE — edit to match your server paths
+#  RUN_VARIANT can be selected via env var RUN_VARIANT=run1|run2
+#  BACKBONE can be selected via env var BACKBONE=SWIN_T|SWIN_B|SWIN_L|R50
 # ═══════════════════════════════════════════════════════════════════════════
-CONFIG = {
-    # ── Run 1: FP hard-mining precision correction ────────────────────────────
-    # NO --resume: optimizer state is reset intentionally (loss fn changed).
-    # Weights loaded via MODEL.WEIGHTS instead.
-    "output_dir":       "./output_swin_boundary_precision_fp",
-    "model_weights":    "./output_swin_boundary/model_final.pth",  # <-- set to your last best checkpoint
-    "train_json":       "/ephemeral/training_data/annotations/instances_train.json",
-    "val_json":         "/ephemeral/training_data/annotations/instances_val.json",
-    "train_images":     "/ephemeral/training_data/images/train",
-    "val_images":       "/ephemeral/training_data/images/val",
-    "ims_per_batch":    12,
-    "num_workers":      16,
-    "grad_accum":       1,
-    "max_iter":         5_000,
-    "eval_period":      1_000,
-    "checkpoint_period": 1_000,
-    "base_lr":          "5e-6",
+BASE_CONFIG = {
+    "model_weights":      "./output_swin_boundary/model_final.pth",  # profile default may override
+    "train_json":         "/ephemeral/training_data/annotations/instances_train.json",
+    "val_json":           "/ephemeral/training_data/annotations/instances_val.json",
+    "train_images":       "/ephemeral/training_data/images/train",
+    "val_images":         "/ephemeral/training_data/images/val",
+    "ims_per_batch":      12,
+    "num_workers":        16,
+    "grad_accum":         1,
+    "max_iter":           5_000,
+    "eval_period":        1_000,
+    "checkpoint_period":  1_000,
+    "base_lr":            "5e-6",
     # LR decay steps — mild annealing in the last 1500 iters
-    "solver_steps":     "(3500,4500)",
-    # Boundary precision weights (must match criterion.py state)
-    "boundary_weight":  "6.0",
-    "mask_weight":      "0.6",
+    "solver_steps":       "(3500,4500)",
+    # Boundary precision correction knobs
+    "boundary_weight":               "6.0",
+    "mask_weight":                   "0.6",
+    "boundary_fp_hard_weight":       "1.0",
+    "boundary_fp_hard_ratio":        "0.03",
 }
+
+BACKBONE_PROFILES = {
+    # Baseline precision-correction continuation from your current Swin-T run.
+    "SWIN_T": {
+        "backbone": "SWIN_T",
+        "ims_per_batch": 12,
+        "model_weights": "./output_swin_boundary/model_final.pth",
+    },
+    # Recommended upgrade path for 97-class fine-grained fashion.
+    "SWIN_B": {
+        "backbone": "SWIN_B",
+        "ims_per_batch": 8,
+        "model_weights": (
+            "https://dl.fbaipublicfiles.com/maskformer/mask2former/coco/instance/"
+            "maskformer2_swin_base_IN21k_384_bs16_50ep/model_final_f07440.pkl"
+        ),
+    },
+    # Highest-capacity option; ensure weight path/url is reachable in your env.
+    "SWIN_L": {
+        "backbone": "SWIN_L",
+        "ims_per_batch": 6,
+        "model_weights": "swin_large_patch4_window12_384_22k.pkl",
+    },
+    "R50": {
+        "backbone": "R50",
+        "ims_per_batch": 12,
+        "model_weights": "detectron2://ImageNetPretrained/torchvision/R-50.pkl",
+    },
+}
+
+RUN_VARIANTS = {
+    # Run 1: isolate FP correction only.
+    "run1": {
+        "output_dir": "./output_swin_boundary_precision_fp",
+        "boundary_size_weight_enabled": "False",
+    },
+    # Run 2: re-enable size weighting only after Run 1 proves reduced bleeding.
+    "run2": {
+        "output_dir": "./output_swin_boundary_precision_fp_sizew",
+        "boundary_size_weight_enabled": "True",
+    },
+}
+
+RUN_VARIANT = os.environ.get("RUN_VARIANT", "run1").strip().lower()
+if RUN_VARIANT not in RUN_VARIANTS:
+    valid = ", ".join(sorted(RUN_VARIANTS.keys()))
+    raise ValueError(f"Invalid RUN_VARIANT='{RUN_VARIANT}'. Expected one of: {valid}")
+
+BACKBONE = os.environ.get("BACKBONE", "SWIN_T").strip().upper()
+if BACKBONE not in BACKBONE_PROFILES:
+    valid = ", ".join(sorted(BACKBONE_PROFILES.keys()))
+    raise ValueError(f"Invalid BACKBONE='{BACKBONE}'. Expected one of: {valid}")
+
+# Bias-correction phase should stay on Swin-T unless user explicitly forces upgrade.
+FORCE_BACKBONE_UPGRADE = os.environ.get("FORCE_BACKBONE_UPGRADE", "0").strip() == "1"
+if RUN_VARIANT in {"run1", "run2"} and BACKBONE != "SWIN_T" and not FORCE_BACKBONE_UPGRADE:
+    raise ValueError(
+        "Bias-correction runs are locked to BACKBONE=SWIN_T by default. "
+        "Set FORCE_BACKBONE_UPGRADE=1 only after stability/precision targets are met."
+    )
+
+CONFIG = {**BASE_CONFIG, **BACKBONE_PROFILES[BACKBONE], **RUN_VARIANTS[RUN_VARIANT]}
 
 # Retry settings
 MAX_RETRIES      = 20        # total restart attempts before giving up
@@ -58,13 +120,34 @@ CRASH_LOG        = os.path.join(CONFIG["output_dir"], "crash_log.jsonl")
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def resolve_start_weights() -> str:
+    """Return seed checkpoint for this attempt.
+
+    Priority:
+      1) latest checkpoint in output_dir (weights-only restart)
+      2) configured seed checkpoint in CONFIG["model_weights"]
+    """
+    ckpt_file = os.path.join(CONFIG["output_dir"], "last_checkpoint")
+    if os.path.isfile(ckpt_file):
+        with open(ckpt_file) as f:
+            ckpt_path = f.read().strip()
+        if ckpt_path:
+            if not os.path.isabs(ckpt_path):
+                ckpt_path = os.path.join(CONFIG["output_dir"], ckpt_path)
+            if os.path.isfile(ckpt_path):
+                return ckpt_path
+    return CONFIG["model_weights"]
+
+
 def build_command() -> list:
     """Build the training.py subprocess command."""
+    model_weights = resolve_start_weights()
     cmd = [
         sys.executable, "training.py",
         # NO --resume: optimizer state intentionally reset because the loss fn changed.
         # Weights are loaded via MODEL.WEIGHTS below instead.
         "--train-only",
+        "--backbone",        CONFIG["backbone"],
         "--output-dir",       CONFIG["output_dir"],
         "--train-json",       CONFIG["train_json"],
         "--val-json",         CONFIG["val_json"],
@@ -75,13 +158,16 @@ def build_command() -> list:
         "--grad-accum-steps", str(CONFIG["grad_accum"]),
         "--max-iter",         str(CONFIG["max_iter"]),
         # Detectron2 opts
-        "MODEL.WEIGHTS",                    CONFIG["model_weights"],
+        "MODEL.WEIGHTS",                    model_weights,
         "SOLVER.BASE_LR",                   CONFIG["base_lr"],
         "SOLVER.STEPS",                     CONFIG["solver_steps"],
         "TEST.EVAL_PERIOD",                 str(CONFIG["eval_period"]),
         "SOLVER.CHECKPOINT_PERIOD",         str(CONFIG["checkpoint_period"]),
         "MODEL.MASK_FORMER.BOUNDARY_WEIGHT", CONFIG["boundary_weight"],
         "MODEL.MASK_FORMER.MASK_WEIGHT",    CONFIG["mask_weight"],
+        "MODEL.MASK_FORMER.BOUNDARY_FP_HARD_WEIGHT", CONFIG["boundary_fp_hard_weight"],
+        "MODEL.MASK_FORMER.BOUNDARY_FP_HARD_RATIO", CONFIG["boundary_fp_hard_ratio"],
+        "MODEL.MASK_FORMER.BOUNDARY_SIZE_WEIGHT_ENABLED", CONFIG["boundary_size_weight_enabled"],
     ]
     return cmd
 
@@ -184,6 +270,9 @@ def preflight_check() -> None:
 
 def main():
     os.makedirs(CONFIG["output_dir"], exist_ok=True)
+    print(f"\n[launcher] RUN_VARIANT={RUN_VARIANT}")
+    print(f"[launcher] BACKBONE={BACKBONE}")
+    print(f"[launcher] output_dir={CONFIG['output_dir']}")
 
     # Fail fast on missing files/dirs — don't waste retry budget on config errors.
     preflight_check()
@@ -201,7 +290,7 @@ def main():
 
         print(f"\n{'='*60}")
         print(f"  Attempt {attempt}/{MAX_RETRIES}")
-        print(f"  Resuming from iter {last_iter}/{CONFIG['max_iter']}")
+        print(f"  Restarting from iter {last_iter}/{CONFIG['max_iter']} (weights-only)")
         print(f"  Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         if wait > 0:
             print(f"  Waiting {wait}s before restart...")

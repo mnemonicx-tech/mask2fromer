@@ -4,10 +4,11 @@ config_setup.py
 Builds and returns a Detectron2 CfgNode for Mask2Former instance segmentation
 tuned for an RTX A4000 (16 GB VRAM) with 97 fashion classes.
 
-Backbone choice: ResNet-50-FPN
-  - Better out-of-the-box convergence than Swin-T for domain-specific data
-  - Lower VRAM footprint leaves headroom to increase batch/crop size
-  - Swin-T variant is provided as an easy drop-in swap (see SWIN_* variables)
+Backbone choices:
+    - R50: baseline/lightweight
+    - SWIN_T: baseline transformer
+    - SWIN_B: stronger feature extractor for fine-grained fashion classes
+    - SWIN_L: highest-capacity option
 
 Usage:
     from config_setup import build_cfg
@@ -34,17 +35,61 @@ _R50_CFG = os.path.join(
     "configs/coco/instance-segmentation/maskformer2_R50_bs16_50ep.yaml",
 )
 
-# Swin-T config (swap-in if you want to try Swin)
+# Swin-T config
 _SWINT_CFG = os.path.join(
     _M2F_ROOT,
     "configs/coco/instance-segmentation/swin/maskformer2_swin_tiny_bs16_50ep.yaml",
 )
 
+# Swin-B (IN21k, 384)
+_SWINB_CFG = os.path.join(
+    _M2F_ROOT,
+    "configs/coco/instance-segmentation/swin/maskformer2_swin_base_IN21k_384_bs16_50ep.yaml",
+)
+
+# Swin-L (IN21k, 384)
+_SWINL_CFG = os.path.join(
+    _M2F_ROOT,
+    "configs/coco/instance-segmentation/swin/maskformer2_swin_large_IN21k_384_bs16_100ep.yaml",
+)
+
+
+_BACKBONE_PRESETS = {
+    "R50": {
+        "cfg": _R50_CFG,
+        "weights": "detectron2://ImageNetPretrained/torchvision/R-50.pkl",
+        "ims_per_batch": 12,
+    },
+    "SWIN_T": {
+        "cfg": _SWINT_CFG,
+        "weights": (
+            "https://github.com/SwinTransformer/storage/releases/download/"
+            "v1.0.0/swin_tiny_patch4_window7_224.pth"
+        ),
+        "ims_per_batch": 12,
+    },
+    "SWIN_B": {
+        "cfg": _SWINB_CFG,
+        # Official Mask2Former COCO instance checkpoint (recommended upgrade path).
+        "weights": (
+            "https://dl.fbaipublicfiles.com/maskformer/mask2former/coco/instance/"
+            "maskformer2_swin_base_IN21k_384_bs16_50ep/model_final_f07440.pkl"
+        ),
+        "ims_per_batch": 8,
+    },
+    "SWIN_L": {
+        "cfg": _SWINL_CFG,
+        # Keep YAML-default ImageNet-22K Swin-L pretrain key by default.
+        "weights": "swin_large_patch4_window12_384_22k.pkl",
+        "ims_per_batch": 6,
+    },
+}
+
 
 def build_cfg(
     output_dir: str = "./output",
     resume: bool = False,
-    backbone: str = "R50",          # "R50" | "SWIN_T"
+    backbone: str = "R50",          # "R50" | "SWIN_T" | "SWIN_B" | "SWIN_L"
     num_classes: int = 97,
     train_dataset: str = "fashion_train",
     val_dataset: str = "fashion_val",
@@ -56,7 +101,7 @@ def build_cfg(
     ----------
     output_dir       : Where to write checkpoints and logs.
     resume           : If True, resume from last checkpoint in output_dir.
-    backbone         : "R50" for ResNet-50, "SWIN_T" for Swin-Tiny.
+    backbone         : One of R50, SWIN_T, SWIN_B, SWIN_L.
     num_classes      : Number of foreground classes (97 for this project).
     train_dataset    : Registered dataset name for training split.
     val_dataset      : Registered dataset name for validation split.
@@ -68,7 +113,13 @@ def build_cfg(
     # -----------------------------------------------------------------------
     # Base config from YAML
     # -----------------------------------------------------------------------
-    base_cfg = _R50_CFG if backbone.upper() == "R50" else _SWINT_CFG
+    backbone_key = backbone.upper()
+    if backbone_key not in _BACKBONE_PRESETS:
+        supported = ", ".join(sorted(_BACKBONE_PRESETS.keys()))
+        raise ValueError(f"Unsupported backbone '{backbone}'. Expected one of: {supported}")
+
+    preset = _BACKBONE_PRESETS[backbone_key]
+    base_cfg = preset["cfg"]
     cfg.merge_from_file(base_cfg)
 
     # -----------------------------------------------------------------------
@@ -101,19 +152,14 @@ def build_cfg(
     cfg.MODEL.MASK_FORMER.DICE_WEIGHT = 1.0
     cfg.MODEL.MASK_FORMER.MASK_WEIGHT = 0.6
     cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 6.0
+    cfg.MODEL.MASK_FORMER.BOUNDARY_FP_HARD_WEIGHT = 1.0
+    cfg.MODEL.MASK_FORMER.BOUNDARY_FP_HARD_RATIO = 0.03
+    cfg.MODEL.MASK_FORMER.BOUNDARY_SIZE_WEIGHT_ENABLED = False
 
     # -----------------------------------------------------------------------
     # Backbone pretrained weights (downloaded automatically by Detectron2)
     # -----------------------------------------------------------------------
-    if backbone.upper() == "R50":
-        cfg.MODEL.WEIGHTS = (
-            "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
-        )
-    else:
-        cfg.MODEL.WEIGHTS = (
-            "https://github.com/SwinTransformer/storage/releases/download/"
-            "v1.0.0/swin_tiny_patch4_window7_224.pth"
-        )
+    cfg.MODEL.WEIGHTS = preset["weights"]
 
     # -----------------------------------------------------------------------
     # Input / augmentation
@@ -137,7 +183,8 @@ def build_cfg(
     # A100-80GB comfortably fits 16 images/iter at 1024×1024 LSJ crops with AMP.
     # Effective batch = 16, matching the official Mask2Former LR (1e-4).
     # No gradient accumulation needed — removes accum overhead for ~15% speed gain.
-    cfg.SOLVER.IMS_PER_BATCH           = 12
+    # Capacity-aware defaults for A100-80GB. Can still be overridden from CLI.
+    cfg.SOLVER.IMS_PER_BATCH           = preset["ims_per_batch"]
 
     _EFFECTIVE_ITERS = 100_000
     cfg.SOLVER.MAX_ITER                = _EFFECTIVE_ITERS
