@@ -118,9 +118,19 @@ class ValidationHook(HookBase):
     TOTAL_SUBSET = 200
     CHUNK_SIZE = 50
     
-    def __init__(self, cfg, dataset_name, period=2000, num_images=50):
+    def __init__(
+        self,
+        cfg,
+        dataset_name,
+        period=2000,
+        num_images=50,
+        adaptive_period=True,
+        flush_every_chunk=False,
+    ):
         self.period = period
         self.num_images = num_images
+        self.adaptive_period = adaptive_period
+        self.flush_every_chunk = flush_every_chunk
         self.dataset_name = dataset_name
         self.cfg = cfg
         self.val_loader = None
@@ -133,7 +143,7 @@ class ValidationHook(HookBase):
         self._accum_small_obj_count = 0
         self._accum_images_logged = []
         self._accum_chunks_done = 0
-        self._total_chunks = self.TOTAL_SUBSET // self.CHUNK_SIZE  # 4
+        self._total_chunks = max(1, (self.TOTAL_SUBSET + self.num_images - 1) // self.num_images)
     
     def _reset_accumulator(self):
         self._accum_metrics = {
@@ -239,15 +249,18 @@ class ValidationHook(HookBase):
 
     def after_step(self):
         next_iter = self.trainer.iter + 1
-        
-        # Adaptive scheduling
-        if next_iter < 20000:
-            current_period = 2000
-        elif next_iter < 40000:
-            current_period = 1000
+
+        if self.adaptive_period:
+            # Adaptive scheduling
+            if next_iter < 20000:
+                current_period = 2000
+            elif next_iter < 40000:
+                current_period = 1000
+            else:
+                current_period = 500  # Fine tuning phase
         else:
-            current_period = 500  # Fine tuning phase
-            
+            current_period = max(1, int(self.period))
+
         if next_iter % current_period == 0:
             self._run_chunk(next_iter)
 
@@ -258,8 +271,12 @@ class ValidationHook(HookBase):
         
         self._run_validation_chunk(current_iter)
         self._accum_chunks_done += 1
-        
-        if self._accum_chunks_done >= self._total_chunks:
+
+        # Short-run mode: flush after each chunk so val metrics are visible every period.
+        if self.flush_every_chunk:
+            self._flush_metrics(current_iter)
+            self._reset_accumulator()
+        elif self._accum_chunks_done >= self._total_chunks:
             self._flush_metrics(current_iter)
             self._reset_accumulator()
 

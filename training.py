@@ -67,6 +67,7 @@ from detectron2.utils.logger import setup_logger
 
 from config_setup import build_cfg
 from register_dataset import get_thing_classes, register_fashion_datasets, run_preflight_checks
+from validation_utils import ValidationHook
 
 logger = logging.getLogger("mask2former.train")
 
@@ -377,6 +378,23 @@ def train(
             "Run evaluation offline after training.",
             run_eval, cfg.TEST.EVAL_PERIOD,
         )
+
+    # Keep custom boundary validation available during --train-only runs.
+    # This is lightweight (subset-based) and logs val/bfscore + strict boundary IoU.
+    if len(cfg.DATASETS.TEST) > 0:
+        active_hooks.append(
+            ValidationHook(
+                cfg,
+                cfg.DATASETS.TEST[0],
+                period=1000,
+                num_images=50,
+                adaptive_period=False,
+                flush_every_chunk=True,
+            )
+        )
+    else:
+        logger.warning("ValidationHook NOT registered: cfg.DATASETS.TEST is empty.")
+
     active_hooks += [
         GPUMemoryHook(period=log_gpu_mem_interval),
         hooks.PeriodicWriter(
@@ -495,8 +513,7 @@ def main(args: argparse.Namespace) -> None:
         cfg.merge_from_list(args.opts)
 
     if args.train_only:
-        # Remove val dataset so no code path can accidentally trigger eval.
-        cfg.DATASETS.TEST = ()
+        # Disable standard Detectron2 EvalHook but keep TEST split for ValidationHook.
         cfg.TEST.EVAL_PERIOD = 0
 
     cfg.freeze()
